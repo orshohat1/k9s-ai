@@ -24,6 +24,10 @@ type Listener interface {
 	AIResponseComplete(content string)
 	// AIResponseFailed is called when an error occurs.
 	AIResponseFailed(err error)
+	// AIReasoningDelta is called for each reasoning chunk (if model supports it).
+	AIReasoningDelta(content string)
+	// AIReasoningComplete is called when reasoning is done.
+	AIReasoningComplete(content string)
 }
 
 // Client manages the GitHub Copilot SDK lifecycle.
@@ -129,15 +133,58 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 		SystemMessage: &copilot.SystemMessageConfig{
 			Content: systemMsg,
 		},
+		InfiniteSessions: &copilot.InfiniteSessionConfig{
+			Enabled:                        copilot.Bool(true),
+			BackgroundCompactionThreshold:  copilot.Float64(0.80),
+			BufferExhaustionThreshold:      copilot.Float64(0.95),
+		},
+		Hooks: &copilot.SessionHooks{
+			OnPreToolUse: func(input copilot.PreToolUseHookInput, inv copilot.HookInvocation) (*copilot.PreToolUseHookOutput, error) {
+				c.log.Debug("Tool invoked", "tool", input.ToolName)
+				return &copilot.PreToolUseHookOutput{
+					PermissionDecision: "allow",
+					ModifiedArgs:       input.ToolArgs,
+				}, nil
+			},
+			OnPostToolUse: func(input copilot.PostToolUseHookInput, inv copilot.HookInvocation) (*copilot.PostToolUseHookOutput, error) {
+				c.log.Debug("Tool completed", "tool", input.ToolName)
+				return &copilot.PostToolUseHookOutput{}, nil
+			},
+			OnErrorOccurred: func(input copilot.ErrorOccurredHookInput, inv copilot.HookInvocation) (*copilot.ErrorOccurredHookOutput, error) {
+				c.log.Error("Session error", "context", input.ErrorContext, "error", input.Error)
+				return &copilot.ErrorOccurredHookOutput{
+					ErrorHandling: "retry",
+				}, nil
+			},
+		},
+	}
+
+	// Apply reasoning effort if configured.
+	if c.cfg.ReasoningEffort != "" {
+		sessionCfg.ReasoningEffort = c.cfg.ReasoningEffort
 	}
 
 	// Configure BYOK provider if specified.
 	if c.cfg.Provider != nil && c.cfg.Provider.BaseURL != "" {
-		sessionCfg.Provider = &copilot.ProviderConfig{
+		prov := &copilot.ProviderConfig{
 			Type:    c.cfg.Provider.Type,
 			BaseURL: c.cfg.Provider.BaseURL,
-			APIKey:  c.cfg.Provider.APIKey,
 		}
+		if key := c.cfg.Provider.ResolveAPIKey(); key != "" {
+			prov.APIKey = key
+		}
+		if token := c.cfg.Provider.ResolveBearerToken(); token != "" {
+			prov.BearerToken = token
+		}
+		if c.cfg.Provider.WireAPI != "" {
+			prov.WireApi = c.cfg.Provider.WireAPI
+		}
+		if c.cfg.Provider.Azure != nil && c.cfg.Provider.Azure.APIVersion != "" {
+			prov.Azure = &copilot.AzureProviderOptions{
+				APIVersion: c.cfg.Provider.Azure.APIVersion,
+			}
+		}
+		sessionCfg.Provider = prov
 	}
 
 	session, err := c.client.CreateSession(ctx, sessionCfg)
@@ -193,6 +240,14 @@ func (c *AIClient) Send(ctx context.Context, prompt string, listener Listener) e
 			if event.Data.Content != nil {
 				fullContent = *event.Data.Content
 			}
+		case "assistant.reasoning_delta":
+			if event.Data.DeltaContent != nil {
+				listener.AIReasoningDelta(*event.Data.DeltaContent)
+			}
+		case "assistant.reasoning":
+			if event.Data.Content != nil {
+				listener.AIReasoningComplete(*event.Data.Content)
+			}
 		case "session.idle":
 			close(done)
 		}
@@ -232,21 +287,30 @@ func (c *AIClient) ResetSession() {
 func k9sSystemMessage() string {
 	return `You are an expert Kubernetes cluster assistant integrated into K9s, a terminal-based Kubernetes management UI.
 
-Your capabilities:
-- Diagnose unhealthy pods, deployments, and other resources
-- Analyze container logs for errors and patterns
-- Explain Kubernetes resource configurations in plain language
-- Suggest fixes for common issues (CrashLoopBackOff, OOMKilled, ImagePullBackOff, etc.)
-- Recommend resource limits, probes, and best practices
-- Help with RBAC troubleshooting
-- Analyze cluster health and resource utilization
+Available tools:
+- get_resource: Fetch a specific resource by GVR, name, and namespace (returns YAML)
+- list_resources: List resources of a given type with optional label selectors and limits
+- describe_resource: Get full kubectl-style description including events and conditions
+- get_logs: Fetch container logs (supports tail, previous containers for crash analysis)
+- get_events: Fetch cluster events filtered by namespace, resource, or type (Normal/Warning)
+- get_cluster_health: High-level cluster overview — node count, pod status summary, server version
+- get_pod_diagnostics: Comprehensive pod diagnostics — phase, container states, restarts, exit codes, probes, resource limits
+- check_rbac: Verify if the current user can perform a specific verb on a resource
+
+Diagnostic workflow:
+1. Start with get_pod_diagnostics or describe_resource to understand the current state
+2. Check get_events for Warnings related to the resource
+3. If containers are crashing, use get_logs with previous=true to get crash logs
+4. Check get_cluster_health for cluster-wide issues (node pressure, resource exhaustion)
+5. Use check_rbac if permission issues are suspected
 
 Guidelines:
 - Be concise and actionable — users are SREs/DevOps engineers in a terminal
 - When diagnosing issues, start with the most likely root cause
 - Provide kubectl commands or YAML patches when suggesting fixes
-- Use bullet points and short paragraphs for readability
-- Flag security concerns when you notice them
-- If you need more information to diagnose, use the available tools to fetch it
-- Always consider the Kubernetes context (namespace, cluster) when answering`
+- Use bullet points and short paragraphs for readability in a terminal
+- Flag security concerns when you notice them (exposed secrets, overly permissive RBAC, missing network policies)
+- If you need more information to diagnose, use the available tools to fetch it — do not ask the user to run commands manually
+- Always consider the Kubernetes context (namespace, cluster) when answering
+- When listing resources, use sensible limits to avoid overwhelming output`
 }

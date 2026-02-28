@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Authors of K9s
+
 package view
 
 import (
@@ -48,7 +51,7 @@ func (e *AIExtender) diagnoseCmd(*tcell.EventKey) *tcell.EventKey {
 	ns, name := client.Namespaced(path)
 	kind := e.GVR().R()
 
-	chat := NewAIChatView(e.App())
+	chat := NewAIChatView()
 	if err := e.App().inject(chat, false); err != nil {
 		e.App().Flash().Err(err)
 		return nil
@@ -60,7 +63,7 @@ func (e *AIExtender) diagnoseCmd(*tcell.EventKey) *tcell.EventKey {
 }
 
 func (e *AIExtender) chatCmd(*tcell.EventKey) *tcell.EventKey {
-	chat := NewAIChatView(e.App())
+	chat := NewAIChatView()
 	if err := e.App().inject(chat, false); err != nil {
 		e.App().Flash().Err(err)
 		return nil
@@ -78,7 +81,7 @@ func (e *AIExtender) explainCmd(*tcell.EventKey) *tcell.EventKey {
 	ns, name := client.Namespaced(path)
 	kind := e.GVR().R()
 
-	chat := NewAIChatView(e.App())
+	chat := NewAIChatView()
 	if err := e.App().inject(chat, false); err != nil {
 		e.App().Flash().Err(err)
 		return nil
