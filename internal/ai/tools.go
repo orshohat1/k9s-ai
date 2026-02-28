@@ -14,6 +14,7 @@ import (
 	"github.com/derailed/k9s/internal/dao"
 	"github.com/derailed/k9s/internal/render"
 	copilot "github.com/github/copilot-sdk/go"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -209,7 +210,7 @@ func (tf *ToolFactory) getLogsTool() copilot.Tool {
 				tailLines = 100
 			}
 
-			opts := &metav1.PodLogOptions{
+			opts := &corev1.PodLogOptions{
 				Container: params.Container,
 				TailLines: &tailLines,
 				Previous:  params.Previous,
@@ -220,13 +221,7 @@ func (tf *ToolFactory) getLogsTool() copilot.Tool {
 				opts.Container = ""
 			}
 
-			req := dial.CoreV1().Pods(params.Namespace).GetLogs(params.PodName, (*metav1.PodLogOptions)(nil))
-			// Use typed pod log options
-			req = dial.CoreV1().Pods(params.Namespace).GetLogs(params.PodName, &metav1.PodLogOptions{
-				Container: params.Container,
-				TailLines: &tailLines,
-				Previous:  params.Previous,
-			})
+			req := dial.CoreV1().Pods(params.Namespace).GetLogs(params.PodName, opts)
 
 			stream, err := req.Stream(context.Background())
 			if err != nil {
