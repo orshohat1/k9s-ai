@@ -74,23 +74,34 @@ brews:
       - linux
       - osx
     repository:
-      owner: derailed
-      name: homebrew-k9s
+      owner: or-shohat
+      name: homebrew-k9s-ai
     directory: Formula
-    homepage: https://github.com/derailed/k9s
+    homepage: https://github.com/or-shohat/k9s-ai
     description: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
     license: Apache-2.0
     install: |
       bin.install "k9s-ai"
+
+scoops:
+  - name: k9s-ai
+    ids:
+      - windows
+    repository:
+      owner: or-shohat
+      name: scoop-k9s-ai
+    homepage: https://github.com/or-shohat/k9s-ai
+    description: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
+    license: Apache-2.0
 
 nfpms:
   - id: k9s-ai
     package_name: k9s-ai
     builds:
       - linux
-    vendor: Derailed
-    homepage: https://github.com/derailed/k9s
-    maintainer: Fernand Galiana <fernand@imhotep.io>
+    vendor: or-shohat
+    homepage: https://github.com/or-shohat/k9s-ai
+    maintainer: Or Shohat
     description: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
     license: Apache-2.0
     formats:
@@ -122,7 +133,7 @@ snapcrafts:
 
 dockers:
   - image_templates:
-      - "derailed/k9s-ai:{{ .Version }}-amd64"
+      - "orshohat/k9s-ai:{{ .Version }}-amd64"
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
@@ -130,7 +141,7 @@ dockers:
       - linux
     goarch: amd64
   - image_templates:
-      - "derailed/k9s-ai:{{ .Version }}-arm64"
+      - "orshohat/k9s-ai:{{ .Version }}-arm64"
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
@@ -139,14 +150,14 @@ dockers:
     goarch: arm64
 
 docker_manifests:
-  - name_template: "derailed/k9s-ai:{{ .Version }}"
+  - name_template: "orshohat/k9s-ai:{{ .Version }}"
     image_templates:
-      - "derailed/k9s-ai:{{ .Version }}-amd64"
-      - "derailed/k9s-ai:{{ .Version }}-arm64"
-  - name_template: "derailed/k9s-ai:latest"
+      - "orshohat/k9s-ai:{{ .Version }}-amd64"
+      - "orshohat/k9s-ai:{{ .Version }}-arm64"
+  - name_template: "orshohat/k9s-ai:latest"
     image_templates:
-      - "derailed/k9s-ai:{{ .Version }}-amd64"
-      - "derailed/k9s-ai:{{ .Version }}-arm64"
+      - "orshohat/k9s-ai:{{ .Version }}-amd64"
+      - "orshohat/k9s-ai:{{ .Version }}-arm64"
 
 checksum:
   name_template: "checksums.txt"

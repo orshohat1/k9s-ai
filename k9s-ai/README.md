@@ -9,23 +9,28 @@ K9s AI extends [K9s](https://github.com/derailed/k9s) with an integrated AI assi
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew install derailed/k9s/k9s-ai
+brew install or-shohat/k9s-ai/k9s-ai
+```
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add k9s-ai https://github.com/or-shohat/scoop-k9s-ai
+scoop install k9s-ai
 ```
 
 ### APT (Debian / Ubuntu)
 
 ```bash
-# Add the repo (one-time)
-echo "deb [trusted=yes] https://apt.fury.io/derailed/ /" | sudo tee /etc/apt/sources.list.d/derailed.list
-sudo apt update
-
-sudo apt install k9s-ai
+# Download the .deb from the latest release
+curl -LO https://github.com/or-shohat/k9s-ai/releases/latest/download/k9s-ai_linux_amd64.deb
+sudo dpkg -i k9s-ai_linux_amd64.deb
 ```
 
-### RPM (Fedora / RHEL)
+### YUM / DNF (Fedora / RHEL)
 
 ```bash
-sudo rpm -i https://github.com/derailed/k9s/releases/latest/download/k9s-ai_linux_amd64.rpm
+sudo rpm -i https://github.com/or-shohat/k9s-ai/releases/latest/download/k9s-ai_linux_amd64.rpm
 ```
 
 ### Snap
@@ -37,18 +42,27 @@ sudo snap install k9s-ai
 ### Docker
 
 ```bash
-docker run --rm -it -v ~/.kube:/root/.kube derailed/k9s-ai:latest
+docker run --rm -it -v ~/.kube:/root/.kube orshohat/k9s-ai:latest
 ```
 
 ### Go Install
 
 ```bash
-go install github.com/derailed/k9s@latest
+go install github.com/or-shohat/k9s-ai@latest
 ```
 
-### Binary Releases
+### Binary Releases (all platforms)
 
-Download from [GitHub Releases](https://github.com/derailed/k9s/releases).
+Download from [GitHub Releases](https://github.com/or-shohat/k9s-ai/releases).
+
+| Platform | Archive |
+|----------|---------|
+| macOS (Apple Silicon) | `k9s-ai_darwin_arm64.tar.gz` |
+| macOS (Intel) | `k9s-ai_darwin_amd64.tar.gz` |
+| Linux (x86_64) | `k9s-ai_linux_amd64.tar.gz` |
+| Linux (ARM64) | `k9s-ai_linux_arm64.tar.gz` |
+| Windows (x86_64) | `k9s-ai_windows_amd64.zip` |
+| Windows (ARM64) | `k9s-ai_windows_arm64.zip` |
 
 ## Features
 
