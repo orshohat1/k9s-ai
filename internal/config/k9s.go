@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright Authors of K9s
-
 package config
 
 import (
@@ -50,6 +47,7 @@ type K9s struct {
 	ImageScans          ImageScans `json:"imageScans" yaml:"imageScans"`
 	Logger              Logger     `json:"logger" yaml:"logger"`
 	Thresholds          Threshold  `json:"thresholds" yaml:"thresholds"`
+	AI                  AI         `json:"ai" yaml:"ai"`
 	DefaultView         string     `json:"defaultView" yaml:"defaultView"`
 	manualRefreshRate   float32
 	manualReadOnly      *bool
@@ -78,6 +76,7 @@ func NewK9s(conn client.Connection, ks data.KubeSettings) *K9s {
 		PortForwardAddress: defaultPFAddress(),
 		ShellPod:           NewShellPod(),
 		ImageScans:         NewImageScans(),
+		AI:                 NewAI(),
 		dir:                data.NewDir(AppContextsDir),
 		conn:               conn,
 		ks:                 ks,
@@ -150,6 +149,7 @@ func (k *K9s) Merge(k1 *K9s) {
 	k.ShellPod = k1.ShellPod
 	k.Logger = k1.Logger
 	k.ImageScans = k1.ImageScans
+	k.AI = k1.AI
 	if k1.Thresholds != nil {
 		k.Thresholds = k1.Thresholds
 	}
@@ -444,6 +444,7 @@ func (k *K9s) Validate(c client.Connection, contextName, clusterName string) {
 	}
 	k.Logger = k.Logger.Validate()
 	k.Thresholds = k.Thresholds.Validate()
+	k.AI = k.AI.Validate()
 
 	if cfg := k.getActiveConfig(); cfg != nil {
 		cfg.Validate(c, contextName, clusterName)

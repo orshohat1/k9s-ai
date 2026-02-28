@@ -1,0 +1,91 @@
+plugins:
+  #--- AI-powered diagnostics via GitHub Copilot ---
+  # These plugins use k9s's built-in Copilot integration.
+  # Enable AI in your k9s config: ai.enabled: true
+
+  # AI diagnose a pod - analyzes status, events, logs, and suggests fixes
+  ai-diagnose-pod:
+    shortCut: Shift-G
+    description: AI Diagnose Pod
+    scopes:
+      - pods
+    command: bash
+    background: false
+    args:
+      - -c
+      - |
+        echo "🤖 AI Diagnosis for pod $NAME in namespace $NAMESPACE"
+        echo "=================================================="
+        echo ""
+        echo "📋 Pod Status:"
+        kubectl get pod $NAME -n $NAMESPACE -o wide --context $CONTEXT
+        echo ""
+        echo "📋 Pod Events:"
+        kubectl get events -n $NAMESPACE --field-selector involvedObject.name=$NAME --context $CONTEXT --sort-by='.lastTimestamp' | tail -20
+        echo ""
+        echo "📋 Pod Describe (conditions & status):"
+        kubectl describe pod $NAME -n $NAMESPACE --context $CONTEXT | grep -A 5 "Conditions:\|State:\|Ready:\|Restart Count:"
+        echo ""
+        echo "📋 Recent Logs (last 50 lines):"
+        kubectl logs $NAME -n $NAMESPACE --context $CONTEXT --tail=50 --all-containers 2>/dev/null || echo "No logs available"
+        echo ""
+        echo "💡 Tip: Use ':ai' in k9s for interactive AI chat about this resource"
+
+  # AI diagnose a deployment
+  ai-diagnose-deploy:
+    shortCut: Shift-G
+    description: AI Diagnose Deployment
+    scopes:
+      - deployments
+    command: bash
+    background: false
+    args:
+      - -c
+      - |
+        echo "🤖 AI Diagnosis for deployment $NAME in namespace $NAMESPACE"
+        echo "=================================================="
+        echo ""
+        echo "📋 Deployment Status:"
+        kubectl get deploy $NAME -n $NAMESPACE -o wide --context $CONTEXT
+        echo ""
+        echo "📋 Deployment Events:"
+        kubectl get events -n $NAMESPACE --field-selector involvedObject.name=$NAME --context $CONTEXT --sort-by='.lastTimestamp' | tail -20
+        echo ""
+        echo "📋 ReplicaSets:"
+        kubectl get rs -n $NAMESPACE -l app=$NAME --context $CONTEXT 2>/dev/null || kubectl get rs -n $NAMESPACE --context $CONTEXT | grep $NAME
+        echo ""
+        echo "📋 Pod Status:"
+        kubectl get pods -n $NAMESPACE -l app=$NAME --context $CONTEXT 2>/dev/null || kubectl get pods -n $NAMESPACE --context $CONTEXT | grep $NAME
+        echo ""
+        echo "💡 Tip: Use ':ai' in k9s for interactive AI chat about this resource"
+
+  # AI cluster health overview
+  ai-cluster-health:
+    shortCut: Shift-G
+    description: AI Cluster Health
+    scopes:
+      - nodes
+    command: bash
+    background: false
+    args:
+      - -c
+      - |
+        echo "🤖 AI Cluster Health Overview"
+        echo "=================================================="
+        echo ""
+        echo "📋 Node Status:"
+        kubectl get nodes -o wide --context $CONTEXT
+        echo ""
+        echo "📋 Node Conditions:"
+        kubectl describe nodes --context $CONTEXT | grep -A 5 "Conditions:" | head -30
+        echo ""
+        echo "📋 Resource Usage (top nodes):"
+        kubectl top nodes --context $CONTEXT 2>/dev/null || echo "Metrics server not available"
+        echo ""
+        echo "📋 Warning Events (cluster-wide):"
+        kubectl get events --all-namespaces --field-selector type=Warning --context $CONTEXT --sort-by='.lastTimestamp' | tail -20
+        echo ""
+        echo "📋 Pods Not Running:"
+        kubectl get pods --all-namespaces --field-selector status.phase!=Running --context $CONTEXT 2>/dev/null | head -20
+        echo ""
+        echo "💡 Tip: Use ':ai' in k9s for interactive AI chat"

@@ -20,6 +20,13 @@ func loadCustomViewers() MetaViewers {
 	return m
 }
 
+// wrapWithAI wraps a viewer function with the AI extender.
+func wrapWithAI(fn ViewerFunc) ViewerFunc {
+	return func(gvr *client.GVR) ResourceViewer {
+		return NewAIExtender(fn(gvr))
+	}
+}
+
 func helmViewers(vv MetaViewers) {
 	vv[client.HmGVR] = MetaViewer{
 		viewerFn: NewHelmChart,
@@ -34,13 +41,13 @@ func coreViewers(vv MetaViewers) {
 		viewerFn: NewEvent,
 	}
 	vv[client.PodGVR] = MetaViewer{
-		viewerFn: NewPod,
+		viewerFn: wrapWithAI(NewPod),
 	}
 	vv[client.SvcGVR] = MetaViewer{
-		viewerFn: NewService,
+		viewerFn: wrapWithAI(NewService),
 	}
 	vv[client.NodeGVR] = MetaViewer{
-		viewerFn: NewNode,
+		viewerFn: wrapWithAI(NewNode),
 	}
 	vv[client.SecGVR] = MetaViewer{
 		viewerFn: NewSecret,
@@ -94,16 +101,16 @@ func miscViewers(vv MetaViewers) {
 
 func appsViewers(vv MetaViewers) {
 	vv[client.DpGVR] = MetaViewer{
-		viewerFn: NewDeploy,
+		viewerFn: wrapWithAI(NewDeploy),
 	}
 	vv[client.RsGVR] = MetaViewer{
-		viewerFn: NewReplicaSet,
+		viewerFn: wrapWithAI(NewReplicaSet),
 	}
 	vv[client.StsGVR] = MetaViewer{
-		viewerFn: NewStatefulSet,
+		viewerFn: wrapWithAI(NewStatefulSet),
 	}
 	vv[client.DsGVR] = MetaViewer{
-		viewerFn: NewDaemonSet,
+		viewerFn: wrapWithAI(NewDaemonSet),
 	}
 }
 
@@ -133,10 +140,10 @@ func rbacViewers(vv MetaViewers) {
 
 func batchViewers(vv MetaViewers) {
 	vv[client.CjGVR] = MetaViewer{
-		viewerFn: NewCronJob,
+		viewerFn: wrapWithAI(NewCronJob),
 	}
 	vv[client.JobGVR] = MetaViewer{
-		viewerFn: NewJob,
+		viewerFn: wrapWithAI(NewJob),
 	}
 }
 

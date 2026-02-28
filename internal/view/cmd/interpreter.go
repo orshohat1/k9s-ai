@@ -205,6 +205,11 @@ func (c *Interpreter) IsDirCmd() bool {
 	return dirCmd.Has(c.cmd)
 }
 
+// IsAICmd returns true if AI chat cmd is detected.
+func (c *Interpreter) IsAICmd() bool {
+	return aiCmd.Has(c.cmd)
+}
+
 // IsRBACCmd returns true if rbac cmd is detected.
 func (c *Interpreter) IsRBACCmd() bool {
 	return c.cmd == canCmd

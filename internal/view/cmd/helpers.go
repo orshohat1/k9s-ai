@@ -66,7 +66,7 @@ func SuggestSubCommand(command string, namespaces client.NamespaceNames, context
 	p := NewInterpreter(command)
 	var suggests []string
 	switch {
-	case p.IsCowCmd(), p.IsHelpCmd(), p.IsAliasCmd(), p.IsBailCmd(), p.IsDirCmd():
+	case p.IsCowCmd(), p.IsHelpCmd(), p.IsAliasCmd(), p.IsBailCmd(), p.IsDirCmd(), p.IsAICmd():
 		return nil
 
 	case p.IsXrayCmd():

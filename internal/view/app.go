@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright Authors of K9s
-
 package view
 
 import (
@@ -18,6 +15,7 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/derailed/k9s/internal"
+	"github.com/derailed/k9s/internal/ai"
 	"github.com/derailed/k9s/internal/client"
 	"github.com/derailed/k9s/internal/config"
 	"github.com/derailed/k9s/internal/model"
@@ -134,14 +132,46 @@ func (a *App) Init(version string, _ int) error {
 	if a.Config.K9s.ImageScans.Enable {
 		a.initImgScanner(version)
 	}
+	if a.Config.K9s.AI.Enabled {
+		a.initAI()
+	}
 	a.ReloadStyles()
 
 	return nil
 }
 
+func (a *App) initAI() {
+	defer func(t time.Time) {
+		slog.Debug("AI client init time", slogs.Elapsed, time.Since(t))
+	}(time.Now())
+
+	aiClient := ai.NewAIClient(a.Config.K9s.AI, slog.Default())
+	if err := aiClient.Init(context.Background()); err != nil {
+		slog.Error("AI client init failed", slogs.Error, err)
+		a.Flash().Warn("AI init failed: " + err.Error())
+		return
+	}
+
+	// Wire tools if we have a connection
+	if a.Conn() != nil && a.Conn().ConnectionOK() && a.factory != nil {
+		tf := ai.NewToolFactory(a.factory, a.Conn(), slog.Default())
+		aiClient.SetTools(tf.BuildTools())
+	}
+
+	ai.Client = aiClient
+	slog.Info("🤖 AI/Copilot integration initialized")
+}
+
 func (*App) stopImgScanner() {
 	if vul.ImgScanner != nil {
 		vul.ImgScanner.Stop()
+	}
+}
+
+func (*App) stopAI() {
+	if ai.Client != nil {
+		ai.Client.Stop()
+		ai.Client = nil
 	}
 }
 
@@ -538,6 +568,7 @@ func (a *App) BailOut(exitCode int) {
 	}
 
 	a.stopImgScanner()
+	a.stopAI()
 	a.factory.Terminate()
 	a.App.BailOut(exitCode)
 }

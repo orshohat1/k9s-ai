@@ -74,4 +74,10 @@ var (
 		"xr",
 		"xray",
 	)
+
+	aiCmd = sets.New(
+		"ai",
+		"chat",
+		"copilot",
+	)
 )

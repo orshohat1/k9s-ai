@@ -305,6 +305,11 @@ func (c *Command) specialCmd(p *cmd.Interpreter, pushCmd bool) bool {
 		} else if err := c.app.dirCmd(a, pushCmd); err != nil {
 			c.app.Flash().Err(err)
 		}
+	case p.IsAICmd():
+		chat := NewAIChatView(c.app)
+		if err := c.app.inject(chat, false); err != nil {
+			c.app.Flash().Err(err)
+		}
 	default:
 		return false
 	}

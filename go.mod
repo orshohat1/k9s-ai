@@ -5,6 +5,7 @@ go 1.25.1
 require (
 	github.com/adrg/xdg v0.5.3
 	github.com/anchore/clio v0.0.0-20250715152405-a0fa658e5084
+	github.com/github/copilot-sdk/go v0.1.29
 	github.com/anchore/grype v0.109.0
 	github.com/anchore/syft v1.42.1
 	github.com/atotto/clipboard v0.1.4
