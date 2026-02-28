@@ -16,7 +16,6 @@ type AI struct {
 	ReasoningEffort string      `json:"reasoningEffort,omitempty" yaml:"reasoningEffort,omitempty"`
 	ActiveSkill     string      `json:"activeSkill,omitempty" yaml:"activeSkill,omitempty"`
 	GitHubToken     string      `json:"githubToken,omitempty" yaml:"githubToken,omitempty"`
-	UseLoggedInUser *bool       `json:"useLoggedInUser,omitempty" yaml:"useLoggedInUser,omitempty"`
 }
 
 // AIProvider tracks BYOK (Bring Your Own Key) provider configuration.
@@ -50,23 +49,10 @@ func (p *AIProvider) ResolveBearerToken() string {
 	return os.Getenv("K9S_AI_BEARER_TOKEN")
 }
 
-// ResolveGitHubToken returns the GitHub token from config or env vars.
-// Priority: config > K9S_AI_GITHUB_TOKEN > COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN.
+// ResolveGitHubToken returns the GitHub token from config.
+// When empty the Copilot SDK falls back to gh CLI auth automatically.
 func (a AI) ResolveGitHubToken() string {
-	if a.GitHubToken != "" {
-		return a.GitHubToken
-	}
-	for _, env := range []string{
-		"K9S_AI_GITHUB_TOKEN",
-		"COPILOT_GITHUB_TOKEN",
-		"GH_TOKEN",
-		"GITHUB_TOKEN",
-	} {
-		if v := os.Getenv(env); v != "" {
-			return v
-		}
-	}
-	return ""
+	return a.GitHubToken
 }
 
 // NewAI creates a new default AI configuration.

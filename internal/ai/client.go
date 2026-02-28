@@ -95,9 +95,6 @@ func (c *AIClient) Init(ctx context.Context) error {
 	if token := c.cfg.ResolveGitHubToken(); token != "" {
 		opts.GitHubToken = token
 	}
-	if c.cfg.UseLoggedInUser != nil {
-		opts.UseLoggedInUser = c.cfg.UseLoggedInUser
-	}
 
 	c.client = copilot.NewClient(opts)
 	if err := c.client.Start(ctx); err != nil {

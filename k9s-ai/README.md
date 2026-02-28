@@ -79,9 +79,8 @@ Download from [GitHub Releases](https://github.com/or-shohat/k9s-ai/releases).
 
 K9s AI authenticates with GitHub Copilot using one of these methods (in priority order):
 
-1. **Config file** — set `githubToken` in `~/.config/k9s/config.yaml`
-2. **Environment variables** — `K9S_AI_GITHUB_TOKEN`, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`
-3. **GitHub CLI** — automatically uses your `gh` login (default)
+1. **GitHub CLI** — automatically uses your `gh auth login` session (default)
+2. **Config file** — set `githubToken` in `~/.config/k9s/config.yaml`
 
 ### BYOK (Bring Your Own Key)
 
@@ -112,8 +111,7 @@ k9s:
     autoDiagnose: false
     reasoningEffort: medium      # low | medium | high | xhigh
     activeSkill: ""              # diagnostics | security | optimization
-    githubToken: ""              # or use env vars
-    # useLoggedInUser: true      # use gh CLI auth (default)
+    # githubToken: ghp_xxx       # leave empty to use gh CLI
     provider:                    # optional BYOK
       type: openai
       baseURL: https://api.openai.com/v1
