@@ -10,7 +10,7 @@ Built on top of [K9s](https://github.com/derailed/k9s), it adds:
 - **Skills** — Focused tool groups for diagnostics, security, and optimization
 - **Model Selection** — Switch between available Copilot models on the fly
 - **BYOK** — Bring your own OpenAI, Azure, or self-hosted API keys
-- **GitHub Auth** — Automatic authentication via `gh` CLI, env vars, or config
+- **GitHub Auth** — Automatic authentication via `gh` CLI or config file
 
 ---
 
@@ -79,37 +79,70 @@ Download archives for all platforms from [GitHub Releases](https://github.com/or
 
 ## Quick Start
 
-1. Install k9s-ai (see above)
-2. Make sure you have a [GitHub Copilot](https://github.com/features/copilot) subscription and are logged in via `gh auth login`
-3. Run `k9s-ai` and type `:ai`
-4. Ask anything:
-   - *"Why is my pod crashing?"*
-   - *"Show all warning events in the kube-system namespace"*
-   - *"Audit RBAC for the default service account"*
-   - *"Which pods are using the most memory?"*
+After installing, you need to connect k9s-ai to an AI provider. There are two options:
+
+### Option A: GitHub Copilot (recommended)
+
+If you have a [GitHub Copilot](https://github.com/features/copilot) subscription:
+
+```shell
+# 1. Install the GitHub CLI (if you don't have it)
+brew install gh
+
+# 2. Log in to your GitHub account
+gh auth login
+
+# 3. Run k9s-ai — it automatically uses your gh session
+k9s-ai
+```
+
+Type `:ai` and start chatting. That's it.
+
+### Option B: Bring Your Own API Key
+
+No Copilot subscription? Use any OpenAI-compatible provider (OpenAI, Anthropic, Azure, Ollama, etc.):
+
+```shell
+# 1. Create the k9s config directory
+mkdir -p ~/.config/k9s
+
+# 2. Add your provider config
+cat >> ~/.config/k9s/config.yaml << 'EOF'
+k9s:
+  ai:
+    enabled: true
+    model: gpt-4.1
+    provider:
+      type: openai
+      baseURL: https://api.openai.com/v1
+      apiKey: sk-your-key-here
+EOF
+
+# 3. Run k9s-ai
+k9s-ai
+```
+
+See [BYOK examples](#bring-your-own-key-byok) below for Azure, Ollama, and other providers.
 
 ---
 
 ## Authentication
 
-K9s AI uses your **GitHub CLI** session by default — no extra configuration needed.
+K9s AI supports two authentication paths:
 
-```shell
-gh auth login   # one-time setup
-k9s-ai          # just works
-```
+| Path | What you need | How it works |
+|------|---------------|--------------|
+| **GitHub Copilot** | A [Copilot subscription](https://github.com/features/copilot) + `gh` CLI | Run `gh auth login` once — k9s-ai picks up your session automatically |
+| **BYOK** | An API key from any OpenAI-compatible provider | Set `provider.apiKey` in `~/.config/k9s/config.yaml` (or `K9S_AI_API_KEY` env var) |
 
-Alternatively, set a token explicitly in your config file:
+For Copilot, you can also set a GitHub token explicitly instead of using the `gh` CLI:
 
 ```yaml
 # ~/.config/k9s/config.yaml
 k9s:
   ai:
-    enabled: true
     githubToken: ghp_xxxxxxxxxxxxxxxxxxxx
 ```
-
-> Don't have GitHub Copilot? See [Bring Your Own Key](#bring-your-own-key-byok) below.
 
 ---
 
