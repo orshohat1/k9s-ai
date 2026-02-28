@@ -165,7 +165,7 @@ func (v *AIModelsView) selectModel(row, _ int) {
 
 	ai.Client.SetModel(selected.ID)
 	v.app.Flash().Infof("Model switched to: %s", selected.Name)
-	slog.Info("AI model changed", slogs.Subsystem, "ai", "model", selected.ID)
+	slog.Info("AI model changed", slogs.Subsys, "ai", "model", selected.ID)
 
 	v.app.Content.Pop()
 }
