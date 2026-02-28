@@ -123,7 +123,13 @@ func (v *AIChatView) updateTitle() {
 	if ai.Client != nil && v.app.Config != nil && v.app.Config.K9s.AI.Model != "" {
 		modelName = v.app.Config.K9s.AI.Model
 	}
-	title := ui.SkinTitle(fmt.Sprintf(aiChatTitleFmt, modelName), &styles)
+	skillInfo := ""
+	if ai.Client != nil {
+		if skill := ai.Client.ActiveSkill(); skill != "" {
+			skillInfo = fmt.Sprintf(" | skill:%s", skill)
+		}
+	}
+	title := ui.SkinTitle(fmt.Sprintf(aiChatTitleFmt, modelName+skillInfo), &styles)
 	v.SetTitle(title)
 }
 
@@ -168,6 +174,7 @@ func (v *AIChatView) bindKeys() {
 		tcell.KeyCtrlR:  ui.NewKeyAction("Reset", v.resetCmd, false),
 		tcell.KeyCtrlS:  ui.NewKeyAction("Save", v.saveCmd, false),
 		tcell.KeyCtrlF:  ui.NewKeyAction("FullScreen", v.toggleFullScreenCmd, false),
+		tcell.KeyCtrlN:  ui.NewKeyAction("Models", v.modelsCmd, false),
 	})
 }
 
@@ -219,6 +226,14 @@ func (v *AIChatView) toggleFullScreenCmd(*tcell.EventKey) *tcell.EventKey {
 		v.output.SetBorderPadding(0, 0, 0, 0)
 	} else {
 		v.output.SetBorderPadding(0, 0, 0, 0)
+	}
+	return nil
+}
+
+func (v *AIChatView) modelsCmd(*tcell.EventKey) *tcell.EventKey {
+	modelsView := NewAIModelsView()
+	if err := v.app.inject(modelsView, false); err != nil {
+		v.app.Flash().Err(err)
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ before:
   hooks:
     - go mod download
     - go generate ./...
+    - go tool bundler || true
 
 release:
   prerelease: false

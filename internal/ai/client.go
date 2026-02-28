@@ -33,12 +33,20 @@ type Listener interface {
 // Client manages the GitHub Copilot SDK lifecycle.
 var Client *AIClient
 
+// ModelInfo describes an available model.
+type ModelInfo struct {
+	ID   string
+	Name string
+}
+
 // AIClient wraps the Copilot SDK client with k9s-specific configuration.
 type AIClient struct {
 	client      *copilot.Client
 	session     *copilot.Session
 	cfg         config.AI
 	tools       []copilot.Tool
+	allTools    []copilot.Tool
+	skills      *SkillRegistry
 	initialized bool
 	mx          sync.RWMutex
 	log         *slog.Logger
@@ -50,8 +58,9 @@ func NewAIClient(cfg config.AI, logger *slog.Logger) *AIClient {
 		logger = slog.Default()
 	}
 	return &AIClient{
-		cfg: cfg,
-		log: logger,
+		cfg:    cfg,
+		log:    logger,
+		skills: NewSkillRegistry(),
 	}
 }
 
@@ -80,6 +89,14 @@ func (c *AIClient) Init(ctx context.Context) error {
 
 	opts := &copilot.ClientOptions{
 		LogLevel: "error",
+	}
+
+	// Wire GitHub authentication.
+	if token := c.cfg.ResolveGitHubToken(); token != "" {
+		opts.GitHubToken = token
+	}
+	if c.cfg.UseLoggedInUser != nil {
+		opts.UseLoggedInUser = c.cfg.UseLoggedInUser
 	}
 
 	c.client = copilot.NewClient(opts)
@@ -116,7 +133,81 @@ func (c *AIClient) SetTools(tools []copilot.Tool) {
 	c.mx.Lock()
 	defer c.mx.Unlock()
 
-	c.tools = tools
+	c.allTools = tools
+	c.tools = c.skills.FilterTools(c.cfg.ActiveSkill, tools)
+}
+
+// Skills returns the skill registry.
+func (c *AIClient) Skills() *SkillRegistry {
+	return c.skills
+}
+
+// SetSkill switches the active skill and refilters tools.
+func (c *AIClient) SetSkill(name string) {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+
+	c.cfg.ActiveSkill = name
+	c.tools = c.skills.FilterTools(name, c.allTools)
+
+	// Destroy current session so next Send() creates one with new skill context.
+	if c.session != nil {
+		_ = c.session.Destroy()
+		c.session = nil
+	}
+}
+
+// ActiveSkill returns the currently active skill name (empty = all tools).
+func (c *AIClient) ActiveSkill() string {
+	c.mx.RLock()
+	defer c.mx.RUnlock()
+
+	return c.cfg.ActiveSkill
+}
+
+// SetModel switches the active model and resets the session.
+func (c *AIClient) SetModel(model string) {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+
+	c.cfg.Model = model
+	if c.session != nil {
+		_ = c.session.Destroy()
+		c.session = nil
+	}
+}
+
+// ActiveModel returns the currently active model name.
+func (c *AIClient) ActiveModel() string {
+	c.mx.RLock()
+	defer c.mx.RUnlock()
+
+	return c.cfg.Model
+}
+
+// ListModels returns the models available from the user's Copilot account.
+func (c *AIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	c.mx.RLock()
+	defer c.mx.RUnlock()
+
+	if !c.initialized || c.client == nil {
+		return nil, fmt.Errorf("AI client not initialized")
+	}
+
+	models, err := c.client.ListModels(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list models: %w", err)
+	}
+
+	var result []ModelInfo
+	for _, m := range models {
+		result = append(result, ModelInfo{
+			ID:   m.ID,
+			Name: m.Name,
+		})
+	}
+
+	return result, nil
 }
 
 // createSession creates a new Copilot session with k9s system message and tools.
@@ -126,6 +217,9 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 	}
 
 	systemMsg := k9sSystemMessage()
+	if suffix := c.skills.SystemMessageSuffix(c.cfg.ActiveSkill); suffix != "" {
+		systemMsg += "\n\n" + suffix
+	}
 	sessionCfg := &copilot.SessionConfig{
 		Model:     c.cfg.Model,
 		Streaming: c.cfg.Streaming,

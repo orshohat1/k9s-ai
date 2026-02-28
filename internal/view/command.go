@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/derailed/k9s/internal/ai"
 	"github.com/derailed/k9s/internal/client"
 	"github.com/derailed/k9s/internal/dao"
 	"github.com/derailed/k9s/internal/model"
@@ -305,6 +306,17 @@ func (c *Command) specialCmd(p *cmd.Interpreter, pushCmd bool) bool {
 		} else if err := c.app.dirCmd(a, pushCmd); err != nil {
 			c.app.Flash().Err(err)
 		}
+	case p.IsAIModelsCmd():
+		modelsView := NewAIModelsView()
+		if err := c.app.inject(modelsView, false); err != nil {
+			c.app.Flash().Err(err)
+		}
+	case p.IsAISkillCmd():
+		if name, ok := p.AISkillArg(); !ok {
+			c.app.Flash().Errf("Invalid command. Use `ai skill <name>` (diagnostics, security, optimization)")
+		} else {
+			c.aiSkillCmd(name)
+		}
 	case p.IsAICmd():
 		chat := NewAIChatView()
 		if err := c.app.inject(chat, false); err != nil {
@@ -315,6 +327,26 @@ func (c *Command) specialCmd(p *cmd.Interpreter, pushCmd bool) bool {
 	}
 
 	return true
+}
+
+func (c *Command) aiSkillCmd(name string) {
+	if ai.Client == nil {
+		c.app.Flash().Errf("AI client not available")
+		return
+	}
+	if _, ok := ai.Client.Skills().Get(name); !ok {
+		names := ai.Client.Skills().List()
+		c.app.Flash().Errf("Unknown skill '%s'. Available: %s", name, strings.Join(names, ", "))
+		return
+	}
+	ai.Client.SetSkill(name)
+	c.app.Flash().Infof("AI skill set to: %s", name)
+
+	// Open chat view with the new skill active.
+	chat := NewAIChatView()
+	if err := c.app.inject(chat, false); err != nil {
+		c.app.Flash().Err(err)
+	}
 }
 
 func (c *Command) viewMetaFor(p *cmd.Interpreter) (*client.GVR, *MetaViewer, *cmd.Interpreter, error) {

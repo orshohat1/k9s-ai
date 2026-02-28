@@ -1,0 +1,46 @@
+name: k9s-ai
+version: '0.1.0'
+summary: K9s AI — Kubernetes CLI with built-in AI/Copilot assistant
+description: |
+  K9s AI provides a terminal UI to interact with your Kubernetes clusters
+  with built-in AI/GitHub Copilot assistant for Kubernetes diagnostics,
+  security auditing, and resource optimization.
+
+  Features:
+  - Full k9s Terminal UI for managing Kubernetes clusters
+  - Built-in AI chat (`:ai` or `:chat`) powered by GitHub Copilot
+  - Skill-based tool groups: diagnostics, security, optimization
+  - Model selection via `:ai models`
+  - BYOK (Bring Your Own Key) support for OpenAI, Azure, and custom providers
+  - GitHub account authentication (gh CLI, env vars, or config)
+
+base: core24
+grade: stable
+confinement: strict
+license: Apache-2.0
+
+architectures:
+  - build-on: [amd64]
+  - build-on: [arm64]
+
+parts:
+  k9s-ai:
+    plugin: go
+    source: .
+    source-type: local
+    build-snaps:
+      - go/1.25/stable
+    build-environment:
+      - CGO_ENABLED: "0"
+    override-build: |
+      go tool bundler || true
+      go build -ldflags="-w -s" -a -tags netgo -o $SNAPCRAFT_PART_INSTALL/bin/k9s-ai main.go
+
+apps:
+  k9s-ai:
+    command: bin/k9s-ai
+    plugs:
+      - home
+      - network
+      - network-bind
+      - personal-files

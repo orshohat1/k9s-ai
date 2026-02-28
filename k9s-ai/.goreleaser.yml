@@ -1,0 +1,160 @@
+version: 2
+
+project_name: k9s-ai
+
+before:
+  hooks:
+    - go mod download
+    - go generate ./...
+    - go tool bundler
+
+release:
+  prerelease: false
+
+env:
+  - CGO_ENABLED=0
+
+builds:
+  - id: linux
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - 7
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X {{.ModulePath}}/cmd.version={{.Version}} -X {{.ModulePath}}/cmd.commit={{.ShortCommit}} -X {{.ModulePath}}/cmd.date={{.Date}}
+
+  - id: osx
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X {{.ModulePath}}/cmd.version={{.Version}} -X {{.ModulePath}}/cmd.commit={{.ShortCommit}} -X {{.ModulePath}}/cmd.date={{.Date}}
+
+  - id: windows
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X {{.ModulePath}}/cmd.version={{.Version}} -X {{.ModulePath}}/cmd.commit={{.ShortCommit}} -X {{.ModulePath}}/cmd.date={{.Date}}
+
+archives:
+  - id: linux
+    builds:
+      - linux
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    format: tar.gz
+  - id: osx
+    builds:
+      - osx
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+  - id: windows
+    builds:
+      - windows
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format: zip
+
+brews:
+  - name: k9s-ai
+    ids:
+      - linux
+      - osx
+    repository:
+      owner: derailed
+      name: homebrew-k9s
+    directory: Formula
+    homepage: https://github.com/derailed/k9s
+    description: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
+    license: Apache-2.0
+    install: |
+      bin.install "k9s-ai"
+
+nfpms:
+  - id: k9s-ai
+    package_name: k9s-ai
+    builds:
+      - linux
+    vendor: Derailed
+    homepage: https://github.com/derailed/k9s
+    maintainer: Fernand Galiana <fernand@imhotep.io>
+    description: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+      - apk
+
+snapcrafts:
+  - id: k9s-ai
+    name: k9s-ai
+    builds:
+      - linux
+    summary: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
+    description: |
+      K9s AI provides a terminal UI to interact with your Kubernetes clusters
+      with built-in AI/GitHub Copilot assistant for diagnostics, security
+      auditing, and resource optimization.
+    grade: stable
+    confinement: strict
+    license: Apache-2.0
+    apps:
+      k9s-ai:
+        command: k9s-ai
+        plugs:
+          - home
+          - network
+          - network-bind
+          - personal-files
+
+dockers:
+  - image_templates:
+      - "derailed/k9s-ai:{{ .Version }}-amd64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+    ids:
+      - linux
+    goarch: amd64
+  - image_templates:
+      - "derailed/k9s-ai:{{ .Version }}-arm64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+    ids:
+      - linux
+    goarch: arm64
+
+docker_manifests:
+  - name_template: "derailed/k9s-ai:{{ .Version }}"
+    image_templates:
+      - "derailed/k9s-ai:{{ .Version }}-amd64"
+      - "derailed/k9s-ai:{{ .Version }}-arm64"
+  - name_template: "derailed/k9s-ai:latest"
+    image_templates:
+      - "derailed/k9s-ai:{{ .Version }}-amd64"
+      - "derailed/k9s-ai:{{ .Version }}-arm64"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

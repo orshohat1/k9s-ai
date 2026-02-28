@@ -210,6 +210,33 @@ func (c *Interpreter) IsAICmd() bool {
 	return aiCmd.Has(c.cmd)
 }
 
+// IsAIModelsCmd returns true if `:ai models` is detected.
+func (c *Interpreter) IsAIModelsCmd() bool {
+	if !c.IsAICmd() {
+		return false
+	}
+	topic, ok := c.args[topicKey]
+	return ok && topic == "models"
+}
+
+// IsAISkillCmd returns true if `:ai skill <name>` is detected.
+func (c *Interpreter) IsAISkillCmd() bool {
+	if !c.IsAICmd() {
+		return false
+	}
+	topic, ok := c.args[topicKey]
+	return ok && topic == "skill"
+}
+
+// AISkillArg returns the skill name from `:ai skill <name>`.
+func (c *Interpreter) AISkillArg() (string, bool) {
+	if !c.IsAISkillCmd() {
+		return "", false
+	}
+	name, ok := c.args[nsKey]
+	return name, ok && name != ""
+}
+
 // IsRBACCmd returns true if rbac cmd is detected.
 func (c *Interpreter) IsRBACCmd() bool {
 	return c.cmd == canCmd
