@@ -5,7 +5,6 @@ go 1.25.1
 require (
 	github.com/adrg/xdg v0.5.3
 	github.com/anchore/clio v0.0.0-20250715152405-a0fa658e5084
-	github.com/github/copilot-sdk/go v0.1.29
 	github.com/anchore/grype v0.109.0
 	github.com/anchore/syft v1.42.1
 	github.com/atotto/clipboard v0.1.4
@@ -15,6 +14,7 @@ require (
 	github.com/fatih/color v1.18.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/fvbommel/sortorder v1.1.0
+	github.com/github/copilot-sdk/go v0.1.29
 	github.com/go-errors/errors v1.5.1
 	github.com/itchyny/gojq v0.12.18
 	github.com/karrick/godirwalk v1.17.0
@@ -204,6 +204,7 @@ require (
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-containerregistry v0.20.7 // indirect
+	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/licensecheck v0.3.1 // indirect
 	github.com/google/pprof v0.0.0-20250630185457-6e76a2b096b5 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
