@@ -4,16 +4,13 @@
 package view
 
 import (
-	"fmt"
-
-	"github.com/derailed/k9s/internal/ai"
 	"github.com/derailed/k9s/internal/client"
 	"github.com/derailed/k9s/internal/ui"
 	"github.com/derailed/tcell/v2"
 )
 
 // AIExtender adds AI-powered actions to resource viewers.
-// It wraps workload-oriented views with Diagnose/Explain/Chat keybindings.
+// It wraps workload-oriented views with an AI Chat keybinding.
 type AIExtender struct {
 	ResourceViewer
 }
@@ -30,12 +27,11 @@ func NewAIExtender(v ResourceViewer) ResourceViewer {
 
 func (e *AIExtender) bindKeys(aa *ui.KeyActions) {
 	aa.Bulk(ui.KeyMap{
-		ui.KeyShiftA: ui.NewKeyAction("AI Diagnose", e.diagnoseCmd, true),
-		ui.KeyShiftX: ui.NewKeyAction("AI Explain", e.explainCmd, true),
+		ui.KeyShiftA: ui.NewKeyAction("AI Chat", e.aiChatCmd, true),
 	})
 }
 
-func (e *AIExtender) diagnoseCmd(*tcell.EventKey) *tcell.EventKey {
+func (e *AIExtender) aiChatCmd(*tcell.EventKey) *tcell.EventKey {
 	path := e.GetTable().GetSelectedItem()
 	if path == "" {
 		return nil
@@ -51,43 +47,5 @@ func (e *AIExtender) diagnoseCmd(*tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	chat.SendDiagnostic(kind, name, ns)
-
 	return nil
-}
-
-func (e *AIExtender) explainCmd(*tcell.EventKey) *tcell.EventKey {
-	path := e.GetTable().GetSelectedItem()
-	if path == "" {
-		return nil
-	}
-
-	ns, name := client.Namespaced(path)
-	kind := e.GVR().R()
-
-	chat := NewAIChatView()
-	chat.SetResourceContext(kind, name, ns)
-	if err := e.App().inject(chat, false); err != nil {
-		e.App().Flash().Err(err)
-		return nil
-	}
-
-	go sendExplainPrompt(chat, kind, name, ns)
-
-	return nil
-}
-
-func sendExplainPrompt(chat *AIChatView, kind, name, ns string) {
-	if ai.Client == nil || !ai.Client.IsEnabled() {
-		chat.appendError("AI is not enabled.")
-		return
-	}
-
-	prompt := fmt.Sprintf(
-		"Explain the %s '%s' in namespace '%s'. Describe its current state, configuration, and how it relates to other resources in the cluster. Highlight anything unusual.",
-		kind, name, ns,
-	)
-
-	chat.appendMessage("user", prompt)
-	chat.sendMessage(prompt)
 }

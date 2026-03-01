@@ -66,8 +66,12 @@ func SuggestSubCommand(command string, namespaces client.NamespaceNames, context
 	p := NewInterpreter(command)
 	var suggests []string
 	switch {
-	case p.IsCowCmd(), p.IsHelpCmd(), p.IsAliasCmd(), p.IsBailCmd(), p.IsDirCmd(), p.IsAICmd():
+	case p.IsCowCmd(), p.IsHelpCmd(), p.IsAliasCmd(), p.IsBailCmd(), p.IsDirCmd():
 		return nil
+
+	case p.IsAICmd():
+		// Suggest AI sub-commands.
+		return completeAI(command)
 
 	case p.IsXrayCmd():
 		_, ns, ok := p.XrayArgs()
@@ -134,5 +138,18 @@ func completeCtx(command, s string, contexts []string) []string {
 		}
 	}
 
+	return suggests
+}
+
+func completeAI(command string) []string {
+	aiSubs := []string{"ai models"}
+	ls := strings.ToLower(strings.TrimSpace(command))
+	var suggests []string
+	for _, sub := range aiSubs {
+		if suggest, ok := ShouldAddSuggest(ls, sub); ok {
+			suggests = append(suggests, suggest)
+		}
+	}
+	slices.Sort(suggests)
 	return suggests
 }

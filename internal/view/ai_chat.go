@@ -106,7 +106,7 @@ func (v *AIChatView) Init(ctx context.Context) error {
 	// Configure input area.
 	v.input.SetLabel("[::b]> [::]")
 	v.input.SetDoneFunc(v.handleInput)
-	v.input.SetPlaceholder("Ask anything about your cluster...")
+	v.restorePlaceholder()
 
 	v.AddItem(v.output, 0, 1, false)
 	v.AddItem(v.statusBar, 1, 0, false)
@@ -124,7 +124,6 @@ func (v *AIChatView) Init(ctx context.Context) error {
 	// Restore previous chat history if available; otherwise show welcome.
 	if !v.restoreHistory() {
 		v.printWelcome()
-		v.applyResourceContext()
 	}
 
 	return nil
@@ -340,8 +339,35 @@ func (v *AIChatView) handleInput(key tcell.Key) {
 	}
 	v.input.SetText("")
 
+	// Expand quick-start shortcuts for resource-scoped chats.
+	if expanded := v.expandQuickStart(text); expanded != "" {
+		text = expanded
+	}
+
 	v.appendMessage("user", text)
 	go v.sendMessage(text)
+}
+
+// expandQuickStart converts shortcut numbers to full prompts for resource chats.
+func (v *AIChatView) expandQuickStart(text string) string {
+	if v.resKind == "" || v.resName == "" {
+		return ""
+	}
+	ns := v.resNamespace
+	if ns == "" {
+		ns = "default"
+	}
+	switch text {
+	case "1":
+		return fmt.Sprintf("Diagnose the %s '%s' in namespace '%s'. Check its status, recent events, logs if applicable, and suggest fixes for any issues.", v.resKind, v.resName, ns)
+	case "2":
+		return fmt.Sprintf("Explain the %s '%s' in namespace '%s'. Describe its current state, configuration, and how it relates to other resources. Highlight anything unusual.", v.resKind, v.resName, ns)
+	case "3":
+		return fmt.Sprintf("Show all resources related to the %s '%s' in namespace '%s' — services, configmaps, secrets, ingress, PVCs, network policies, and any other connected resources.", v.resKind, v.resName, ns)
+	case "4":
+		return fmt.Sprintf("Show recent events (especially warnings) related to the %s '%s' and its pods in namespace '%s'. Explain what each event means.", v.resKind, v.resName, ns)
+	}
+	return ""
 }
 
 func (v *AIChatView) sendMessage(text string) {
@@ -463,7 +489,6 @@ When using diagnostic tools, scope queries to this resource and its namespace.
 func (v *AIChatView) reRenderChat() {
 	v.output.Clear()
 	v.printWelcome()
-	v.applyResourceContext()
 	for _, msg := range v.history {
 		v.renderMessage(msg.role, msg.content)
 	}
@@ -551,16 +576,26 @@ func (v *AIChatView) appendError(msg string) {
 func (v *AIChatView) renderFormattedContent(content string) {
 	lines := strings.Split(content, "\n")
 	inCodeBlock := false
+	var tableRows [][]string // accumulate table rows for batch rendering
 
 	s := v.app.Styles
 	codeColor := s.Frame().Menu.FgColor
 	highlightColor := s.Frame().Title.HighlightColor
+
+	flushTable := func() {
+		if len(tableRows) == 0 {
+			return
+		}
+		v.renderTable(tableRows, highlightColor, codeColor)
+		tableRows = nil
+	}
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
 		// Handle code block fences.
 		if strings.HasPrefix(trimmed, "```") {
+			flushTable()
 			inCodeBlock = !inCodeBlock
 			if inCodeBlock {
 				lang := strings.TrimPrefix(trimmed, "```")
@@ -580,6 +615,25 @@ func (v *AIChatView) renderFormattedContent(content string) {
 			fmt.Fprintf(v.output, "    [%s::d]│[-::-] [%s::-]%s[-::-]\n", codeColor, highlightColor, line)
 			continue
 		}
+
+		// Horizontal rules: --- or *** or ___
+		if isHorizontalRule(trimmed) {
+			flushTable()
+			fmt.Fprintf(v.output, "\n    [%s::d]%s[-::-]\n\n", codeColor, thinSeparator)
+			continue
+		}
+
+		// Markdown tables: | col1 | col2 |
+		if isTableRow(trimmed) {
+			if isTableSeparatorRow(trimmed) {
+				continue // skip |---|---| rows
+			}
+			tableRows = append(tableRows, parseTableCells(trimmed))
+			continue
+		}
+
+		// If we had table rows and hit a non-table line, flush.
+		flushTable()
 
 		// Headers: ## Foo -> bold.
 		if strings.HasPrefix(trimmed, "#") {
@@ -613,6 +667,119 @@ func (v *AIChatView) renderFormattedContent(content string) {
 		formatted := renderInlineFormatting(trimmed)
 		fmt.Fprintf(v.output, "    %s\n", formatted)
 	}
+	flushTable()
+}
+
+// renderTable renders accumulated table rows with aligned columns.
+func (v *AIChatView) renderTable(rows [][]string, hlColor, dimColor config.Color) {
+	if len(rows) == 0 {
+		return
+	}
+
+	// Compute max width for each column.
+	numCols := 0
+	for _, row := range rows {
+		if len(row) > numCols {
+			numCols = len(row)
+		}
+	}
+	colWidths := make([]int, numCols)
+	for _, row := range rows {
+		for i, cell := range row {
+			// Strip tview color tags and markdown for width calculation.
+			plain := stripFormatting(cell)
+			if len(plain) > colWidths[i] {
+				colWidths[i] = len(plain)
+			}
+		}
+	}
+
+	fmt.Fprint(v.output, "\n")
+
+	for i, row := range rows {
+		if i == 0 {
+			// Header row — bold, with separator below.
+			var parts []string
+			for j, cell := range row {
+				padded := cell + strings.Repeat(" ", maxInt(0, colWidths[j]-len(stripFormatting(cell))))
+				parts = append(parts, renderInlineFormatting(padded))
+			}
+			fmt.Fprintf(v.output, "    [::b]%s[-::-]\n", strings.Join(parts, "  "))
+			// Divider under header.
+			var divParts []string
+			for _, w := range colWidths {
+				divParts = append(divParts, strings.Repeat("─", maxInt(2, w)))
+			}
+			fmt.Fprintf(v.output, "    [%s::d]%s[-::-]\n", dimColor, strings.Join(divParts, "──"))
+		} else {
+			// Data row.
+			var parts []string
+			for j, cell := range row {
+				padded := cell + strings.Repeat(" ", maxInt(0, colWidths[j]-len(stripFormatting(cell))))
+				parts = append(parts, renderInlineFormatting(padded))
+			}
+			fmt.Fprintf(v.output, "    %s\n", strings.Join(parts, "  "))
+		}
+	}
+	fmt.Fprint(v.output, "\n")
+}
+
+// --------------------------------------------------------------------------
+// Markdown helper functions
+
+func isHorizontalRule(line string) bool {
+	if len(line) < 3 {
+		return false
+	}
+	ch := rune(line[0])
+	if ch != '-' && ch != '*' && ch != '_' {
+		return false
+	}
+	for _, r := range line {
+		if r != ch && r != ' ' {
+			return false
+		}
+	}
+	return true
+}
+
+func isTableRow(line string) bool {
+	return strings.HasPrefix(line, "|") && strings.HasSuffix(line, "|") && strings.Count(line, "|") >= 3
+}
+
+func isTableSeparatorRow(line string) bool {
+	cleaned := strings.ReplaceAll(line, "|", "")
+	cleaned = strings.ReplaceAll(cleaned, "-", "")
+	cleaned = strings.ReplaceAll(cleaned, ":", "")
+	cleaned = strings.TrimSpace(cleaned)
+	return cleaned == ""
+}
+
+func parseTableCells(line string) []string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
+	parts := strings.Split(line, "|")
+	cells := make([]string, 0, len(parts))
+	for _, p := range parts {
+		cells = append(cells, strings.TrimSpace(p))
+	}
+	return cells
+}
+
+func stripFormatting(s string) string {
+	// Remove markdown bold.
+	s = regexp.MustCompile(`\*\*(.+?)\*\*`).ReplaceAllString(s, "$1")
+	// Remove markdown inline code.
+	s = regexp.MustCompile("`([^`]+)`").ReplaceAllString(s, "$1")
+	return s
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // renderInlineFormatting converts inline markdown to tview colors.
@@ -637,21 +804,50 @@ func (v *AIChatView) printWelcome() {
 	dimColor := s.Frame().Menu.FgColor
 	addColor := s.Frame().Status.AddColor
 
-	welcome := fmt.Sprintf(
-		"\n  [%s::b]✦ K9s AI Assistant[-::-]\n"+
-			"  [%s::d]Powered by GitHub Copilot[-::-]\n\n"+
-			"  [%s::-]Ask me anything about your cluster:[-::-]\n\n"+
-			"    [%s::-]•[-::-] Diagnose pod crashes, OOM kills, image pull errors\n"+
-			"    [%s::-]•[-::-] Fix deployments by patching, scaling, or restarting\n"+
-			"    [%s::-]•[-::-] Analyze events, logs, RBAC, and cluster health\n\n"+
-			"  [%s::d]PgUp/PgDn scroll  ·  ↑↓ scroll  ·  Ctrl+C clear  ·  Ctrl+R reset[-::-]\n",
-		addColor,
-		dimColor,
-		dimColor,
-		hlColor, hlColor, hlColor,
-		dimColor,
-	)
-	fmt.Fprint(v.output, welcome)
+	if v.resKind != "" && v.resName != "" {
+		// Resource-scoped welcome with quick-start prompts.
+		label := v.resName
+		if v.resNamespace != "" {
+			label = fmt.Sprintf("%s/%s", v.resNamespace, v.resName)
+		}
+
+		welcome := fmt.Sprintf(
+			"\n  [%s::b]✦ AI Chat[-::-] [%s::d]— %s[-::-]\n"+
+				"  [%s::d]Focused on [::b]%s[-::-] [%s::d](%s)[-::-]\n\n"+
+				"  [%s::-]Quick start — type a number or ask your own question:[-::-]\n\n"+
+				"    [%s::b]1[-::-]  Diagnose this %s — check status, events, and logs\n"+
+				"    [%s::b]2[-::-]  Explain this %s — describe config and relationships\n"+
+				"    [%s::b]3[-::-]  Show related resources — services, configmaps, ingress\n"+
+				"    [%s::b]4[-::-]  Check events — recent warnings and errors\n\n"+
+				"  [%s::d]PgUp/PgDn scroll  ·  ↑↓ scroll  ·  Ctrl+C clear  ·  Ctrl+R reset  ·  Ctrl+N models[-::-]\n",
+			addColor, dimColor, label,
+			dimColor, label, dimColor, v.resKind,
+			dimColor,
+			hlColor, v.resKind,
+			hlColor, v.resKind,
+			hlColor,
+			hlColor,
+			dimColor,
+		)
+		fmt.Fprint(v.output, welcome)
+	} else {
+		// Global cluster chat welcome.
+		welcome := fmt.Sprintf(
+			"\n  [%s::b]✦ K9s AI Assistant[-::-]\n"+
+				"  [%s::d]Powered by GitHub Copilot[-::-]\n\n"+
+				"  [%s::-]Ask me anything about your cluster:[-::-]\n\n"+
+				"    [%s::-]•[-::-] Diagnose pod crashes, OOM kills, image pull errors\n"+
+				"    [%s::-]•[-::-] Fix deployments by patching, scaling, or restarting\n"+
+				"    [%s::-]•[-::-] Analyze events, logs, RBAC, and cluster health\n\n"+
+				"  [%s::d]PgUp/PgDn scroll  ·  ↑↓ scroll  ·  Ctrl+C clear  ·  Ctrl+R reset  ·  Ctrl+N models[-::-]\n",
+			addColor,
+			dimColor,
+			dimColor,
+			hlColor, hlColor, hlColor,
+			dimColor,
+		)
+		fmt.Fprint(v.output, welcome)
+	}
 }
 
 // SetResourceContext sets the resource context for the chat view.
@@ -665,39 +861,15 @@ func (v *AIChatView) applyResourceContext() {
 	if v.resKind == "" || v.resName == "" {
 		return
 	}
-
-	s := v.app.Styles
-	hlColor := s.Frame().Title.HighlightColor
-	dimColor := s.Frame().Menu.FgColor
-
-	label := fmt.Sprintf("%s/%s", v.resKind, v.resName)
-	if v.resNamespace != "" {
-		label = fmt.Sprintf("%s/%s", v.resName, v.resNamespace)
-	}
-
-	fmt.Fprintf(v.output, "\n  [%s::d]%s[-::-]\n", dimColor, chatSeparator)
-	fmt.Fprintf(v.output, "  [%s::b]Resource:[-::-]  [%s::-]%s[-::-] [%s::d](%s)[-::-]\n", hlColor, hlColor, label, dimColor, v.resKind)
-	v.input.SetPlaceholder(fmt.Sprintf("Ask about %s/%s...", v.resKind, v.resName))
+	v.input.SetPlaceholder(fmt.Sprintf("Ask about %s/%s (1-4 for quick start)...", v.resKind, v.resName))
 }
 
 func (v *AIChatView) restorePlaceholder() {
 	if v.resKind != "" && v.resName != "" {
-		v.input.SetPlaceholder(fmt.Sprintf("Ask about %s/%s...", v.resKind, v.resName))
+		v.input.SetPlaceholder(fmt.Sprintf("Ask about %s/%s (1-4 for quick start)...", v.resKind, v.resName))
 	} else {
 		v.input.SetPlaceholder("Ask anything about your cluster...")
 	}
-}
-
-// SendDiagnostic sends a diagnostic prompt with pre-filled context.
-// The prompt is shown as a user message so the user can see what was asked.
-func (v *AIChatView) SendDiagnostic(resourceKind, resourceName, namespace string) {
-	prompt := fmt.Sprintf(
-		"Diagnose the %s '%s' in namespace '%s'. Check its status, recent events, logs if applicable, and suggest fixes for any issues.",
-		resourceKind, resourceName, namespace,
-	)
-
-	v.appendMessage("user", prompt)
-	go v.sendMessage(prompt)
 }
 
 // --------------------------------------------------------------------------
