@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
+	"time"
 
 	"github.com/derailed/k9s/internal/client"
 	"github.com/derailed/k9s/internal/dao"
@@ -19,6 +21,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,6 +56,10 @@ func (tf *ToolFactory) BuildTools() []copilot.Tool {
 		tf.getClusterHealthTool(),
 		tf.getPodDiagnosticsTool(),
 		tf.checkRBACTool(),
+		tf.patchResourceTool(),
+		tf.scaleResourceTool(),
+		tf.restartResourceTool(),
+		tf.deleteResourceTool(),
 	}
 }
 
@@ -530,7 +538,221 @@ func (tf *ToolFactory) checkRBACTool() copilot.Tool {
 	)
 }
 
+// --- Mutation tools ---
+
+// --- patch_resource tool ---
+
+type patchResourceParams struct {
+	GVR       string `json:"gvr" jsonschema:"Group/Version/Resource identifier, e.g. apps/v1/deployments, v1/services"`
+	Name      string `json:"name" jsonschema:"Resource name"`
+	Namespace string `json:"namespace" jsonschema:"Kubernetes namespace (empty for cluster-scoped resources)"`
+	Patch     string `json:"patch" jsonschema:"JSON merge patch to apply, e.g. {\"spec\":{\"replicas\":3}}"`
+}
+
+func (tf *ToolFactory) patchResourceTool() copilot.Tool {
+	return copilot.DefineTool(
+		"patch_resource",
+		"Apply a JSON merge patch to a Kubernetes resource. Use this to update deployments, services, configmaps, etc. For example: fix a bad container image, change environment variables, update labels, or modify resource limits.",
+		func(params patchResourceParams, inv copilot.ToolInvocation) (any, error) {
+			tf.log.Info("Patching resource", "gvr", params.GVR, "name", params.Name, "ns", params.Namespace)
+
+			gvr, err := parseGVR(params.GVR)
+			if err != nil {
+				return nil, err
+			}
+
+			dynClient, err := tf.conn.DynDial()
+			if err != nil {
+				return nil, fmt.Errorf("failed to connect to cluster: %w", err)
+			}
+
+			var result *unstructured.Unstructured
+			res := dynClient.Resource(gvr)
+			patchData := []byte(params.Patch)
+
+			if params.Namespace != "" {
+				result, err = res.Namespace(params.Namespace).Patch(
+					context.Background(), params.Name, types.MergePatchType, patchData, metav1.PatchOptions{},
+				)
+			} else {
+				result, err = res.Patch(
+					context.Background(), params.Name, types.MergePatchType, patchData, metav1.PatchOptions{},
+				)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to patch %s %s/%s: %w", params.GVR, params.Namespace, params.Name, err)
+			}
+
+			return map[string]any{
+				"status":  "patched",
+				"name":    result.GetName(),
+				"ns":      result.GetNamespace(),
+				"version": result.GetResourceVersion(),
+			}, nil
+		},
+	)
+}
+
+// --- scale_resource tool ---
+
+type scaleResourceParams struct {
+	GVR       string `json:"gvr" jsonschema:"Group/Version/Resource identifier, e.g. apps/v1/deployments, apps/v1/statefulsets, apps/v1/replicasets"`
+	Name      string `json:"name" jsonschema:"Resource name"`
+	Namespace string `json:"namespace" jsonschema:"Kubernetes namespace"`
+	Replicas  int32  `json:"replicas" jsonschema:"Desired number of replicas"`
+}
+
+func (tf *ToolFactory) scaleResourceTool() copilot.Tool {
+	return copilot.DefineTool(
+		"scale_resource",
+		"Scale a Kubernetes workload (Deployment, StatefulSet, ReplicaSet) to the desired number of replicas.",
+		func(params scaleResourceParams, inv copilot.ToolInvocation) (any, error) {
+			tf.log.Info("Scaling resource", "gvr", params.GVR, "name", params.Name, "replicas", params.Replicas)
+
+			patch := fmt.Sprintf(`{"spec":{"replicas":%d}}`, params.Replicas)
+
+			gvr, err := parseGVR(params.GVR)
+			if err != nil {
+				return nil, err
+			}
+
+			dynClient, err := tf.conn.DynDial()
+			if err != nil {
+				return nil, fmt.Errorf("failed to connect to cluster: %w", err)
+			}
+
+			result, err := dynClient.Resource(gvr).Namespace(params.Namespace).Patch(
+				context.Background(), params.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{},
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to scale %s %s/%s: %w", params.GVR, params.Namespace, params.Name, err)
+			}
+
+			return map[string]any{
+				"status":   "scaled",
+				"name":     result.GetName(),
+				"replicas": params.Replicas,
+				"version":  result.GetResourceVersion(),
+			}, nil
+		},
+	)
+}
+
+// --- restart_resource tool ---
+
+type restartResourceParams struct {
+	GVR       string `json:"gvr" jsonschema:"Group/Version/Resource identifier, e.g. apps/v1/deployments, apps/v1/statefulsets, apps/v1/daemonsets"`
+	Name      string `json:"name" jsonschema:"Resource name"`
+	Namespace string `json:"namespace" jsonschema:"Kubernetes namespace"`
+}
+
+func (tf *ToolFactory) restartResourceTool() copilot.Tool {
+	return copilot.DefineTool(
+		"restart_resource",
+		"Perform a rolling restart of a Kubernetes workload (Deployment, StatefulSet, DaemonSet) by updating the restartedAt annotation, equivalent to kubectl rollout restart.",
+		func(params restartResourceParams, inv copilot.ToolInvocation) (any, error) {
+			tf.log.Info("Restarting resource", "gvr", params.GVR, "name", params.Name)
+
+			now := time.Now().UTC().Format(time.RFC3339)
+			patch := fmt.Sprintf(
+				`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":"%s"}}}}}`,
+				now,
+			)
+
+			gvr, err := parseGVR(params.GVR)
+			if err != nil {
+				return nil, err
+			}
+
+			dynClient, err := tf.conn.DynDial()
+			if err != nil {
+				return nil, fmt.Errorf("failed to connect to cluster: %w", err)
+			}
+
+			_, err = dynClient.Resource(gvr).Namespace(params.Namespace).Patch(
+				context.Background(), params.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{},
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to restart %s %s/%s: %w", params.GVR, params.Namespace, params.Name, err)
+			}
+
+			return map[string]any{
+				"status":      "restarting",
+				"name":        params.Name,
+				"restartedAt": now,
+			}, nil
+		},
+	)
+}
+
+// --- delete_resource tool ---
+
+type deleteResourceParams struct {
+	GVR       string `json:"gvr" jsonschema:"Group/Version/Resource identifier, e.g. v1/pods, apps/v1/deployments"`
+	Name      string `json:"name" jsonschema:"Resource name"`
+	Namespace string `json:"namespace" jsonschema:"Kubernetes namespace (empty for cluster-scoped)"`
+}
+
+func (tf *ToolFactory) deleteResourceTool() copilot.Tool {
+	return copilot.DefineTool(
+		"delete_resource",
+		"Delete a Kubernetes resource. Use cautiously. Useful for removing stuck pods, cleaning up failed jobs, or deleting resources that need recreation.",
+		func(params deleteResourceParams, inv copilot.ToolInvocation) (any, error) {
+			tf.log.Info("Deleting resource", "gvr", params.GVR, "name", params.Name, "ns", params.Namespace)
+
+			gvr, err := parseGVR(params.GVR)
+			if err != nil {
+				return nil, err
+			}
+
+			dynClient, err := tf.conn.DynDial()
+			if err != nil {
+				return nil, fmt.Errorf("failed to connect to cluster: %w", err)
+			}
+
+			res := dynClient.Resource(gvr)
+			if params.Namespace != "" {
+				err = res.Namespace(params.Namespace).Delete(context.Background(), params.Name, metav1.DeleteOptions{})
+			} else {
+				err = res.Delete(context.Background(), params.Name, metav1.DeleteOptions{})
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to delete %s %s/%s: %w", params.GVR, params.Namespace, params.Name, err)
+			}
+
+			return map[string]any{
+				"status": "deleted",
+				"name":   params.Name,
+				"ns":     params.Namespace,
+			}, nil
+		},
+	)
+}
+
 // --- Helpers ---
+
+// parseGVR converts a string like "apps/v1/deployments" or "v1/pods" into a schema.GroupVersionResource.
+func parseGVR(gvrStr string) (schema.GroupVersionResource, error) {
+	parts := strings.Split(gvrStr, "/")
+	switch len(parts) {
+	case 2:
+		// e.g. "v1/pods" -> group="", version="v1", resource="pods"
+		return schema.GroupVersionResource{
+			Group:    "",
+			Version:  parts[0],
+			Resource: parts[1],
+		}, nil
+	case 3:
+		// e.g. "apps/v1/deployments" -> group="apps", version="v1", resource="deployments"
+		return schema.GroupVersionResource{
+			Group:    parts[0],
+			Version:  parts[1],
+			Resource: parts[2],
+		}, nil
+	default:
+		return schema.GroupVersionResource{}, fmt.Errorf("invalid GVR format %q: expected 'version/resource' or 'group/version/resource'", gvrStr)
+	}
+}
 
 func objectToYAML(obj runtime.Object) (string, error) {
 	data, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)

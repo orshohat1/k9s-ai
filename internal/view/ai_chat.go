@@ -31,24 +31,33 @@ const (
 type AIChatView struct {
 	*tview.Flex
 
-	app          *App
-	output       *tview.TextView
-	input        *tview.InputField
-	statusBar    *tview.TextView
-	actions      *ui.KeyActions
-	history      []chatMessage
-	streaming    bool
-	fullScreen   bool
-	resKind      string
-	resName      string
-	resNamespace string
-	mu           sync.Mutex
+	app            *App
+	output         *tview.TextView
+	input          *tview.InputField
+	statusBar      *tview.TextView
+	actions        *ui.KeyActions
+	history        []chatMessage
+	streaming      bool
+	streamingHeader bool // true if we've printed the Copilot header for current stream
+	fullScreen     bool
+	resKind        string
+	resName        string
+	resNamespace   string
+	mu             sync.Mutex
 }
 
 type chatMessage struct {
 	role    string
 	content string
+	// activity is true for tool activity lines (not sent to AI, display-only).
+	activity bool
 }
+
+// Package-level chat history that persists across view recreations.
+var (
+	globalChatHistory []chatMessage
+	globalChatMu      sync.Mutex
+)
 
 var _ model.Component = (*AIChatView)(nil)
 
@@ -81,9 +90,6 @@ func (v *AIChatView) Init(ctx context.Context) error {
 	v.output.SetScrollable(true)
 	v.output.SetWrap(true)
 	v.output.SetWordWrap(true)
-	v.output.SetChangedFunc(func() {
-		v.app.Draw()
-	})
 
 	// Status bar between output and input.
 	v.statusBar = tview.NewTextView()
@@ -100,12 +106,19 @@ func (v *AIChatView) Init(ctx context.Context) error {
 	v.AddItem(v.input, 1, 0, true)
 
 	v.bindKeys()
-	v.SetInputCapture(v.keyboard)
+	// IMPORTANT: Set capture on the input field, not the Flex.
+	// tview docs: "SetInputCapture will not have an effect on composing
+	// primitives such as Flex" — only the focused primitive gets events.
+	v.input.SetInputCapture(v.keyboard)
 	v.StylesChanged(v.app.Styles)
 	v.updateTitle()
 	v.setStatusReady()
-	v.printWelcome()
-	v.applyResourceContext()
+
+	// Restore previous chat history if available; otherwise show welcome.
+	if !v.restoreHistory() {
+		v.printWelcome()
+		v.applyResourceContext()
+	}
 
 	return nil
 }
@@ -183,10 +196,32 @@ func (v *AIChatView) bindKeys() {
 		tcell.KeyCtrlS:  ui.NewKeyAction("Save", v.saveCmd, false),
 		tcell.KeyCtrlF:  ui.NewKeyAction("FullScreen", v.toggleFullScreenCmd, false),
 		tcell.KeyCtrlN:  ui.NewKeyAction("Models", v.modelsCmd, false),
+		tcell.KeyPgUp:   ui.NewKeyAction("PgUp", nil, false),
+		tcell.KeyPgDn:   ui.NewKeyAction("PgDn", nil, false),
 	})
 }
 
 func (v *AIChatView) keyboard(evt *tcell.EventKey) *tcell.EventKey {
+	// Scroll output while input retains focus.
+	switch evt.Key() {
+	case tcell.KeyPgUp:
+		row, col := v.output.GetScrollOffset()
+		v.output.ScrollTo(row-10, col)
+		return nil
+	case tcell.KeyPgDn:
+		row, col := v.output.GetScrollOffset()
+		v.output.ScrollTo(row+10, col)
+		return nil
+	case tcell.KeyUp:
+		row, col := v.output.GetScrollOffset()
+		v.output.ScrollTo(row-1, col)
+		return nil
+	case tcell.KeyDown:
+		row, col := v.output.GetScrollOffset()
+		v.output.ScrollTo(row+1, col)
+		return nil
+	}
+
 	if a, ok := v.actions.Get(ui.AsKey(evt)); ok {
 		return a.Action(evt)
 	}
@@ -201,6 +236,9 @@ func (v *AIChatView) backCmd(*tcell.EventKey) *tcell.EventKey {
 func (v *AIChatView) clearCmd(*tcell.EventKey) *tcell.EventKey {
 	v.output.Clear()
 	v.history = nil
+	globalChatMu.Lock()
+	globalChatHistory = nil
+	globalChatMu.Unlock()
 	v.printWelcome()
 	return nil
 }
@@ -211,6 +249,9 @@ func (v *AIChatView) resetCmd(*tcell.EventKey) *tcell.EventKey {
 	}
 	v.output.Clear()
 	v.history = nil
+	globalChatMu.Lock()
+	globalChatHistory = nil
+	globalChatMu.Unlock()
 	v.printWelcome()
 	v.app.Flash().Info("AI session reset")
 	return nil
@@ -246,28 +287,28 @@ func (v *AIChatView) modelsCmd(*tcell.EventKey) *tcell.EventKey {
 
 func (v *AIChatView) setStatusReady() {
 	v.statusBar.Clear()
-	fmt.Fprintf(v.statusBar, " [green::b]Ready[-::-]")
+	fmt.Fprintf(v.statusBar, " [green::b]● Ready[-::-]")
 }
 
 func (v *AIChatView) setStatusThinking() {
 	v.statusBar.Clear()
-	fmt.Fprintf(v.statusBar, " [yellow::b]Thinking...[-::-]  [gray::-](please wait)[-::-]")
+	fmt.Fprintf(v.statusBar, " [yellow::b]○ Thinking...[-::-]  [gray::-]please wait[-::-]")
 }
 
 func (v *AIChatView) setStatusReasoning() {
 	v.statusBar.Clear()
-	fmt.Fprintf(v.statusBar, " [magenta::b]Reasoning...[-::-]  [gray::-](model is thinking deeply)[-::-]")
+	fmt.Fprintf(v.statusBar, " [magenta::b]○ Reasoning...[-::-]  [gray::-]model is thinking deeply[-::-]")
 }
 
 func (v *AIChatView) setStatusStreaming() {
 	v.statusBar.Clear()
-	fmt.Fprintf(v.statusBar, " [cyan::b]Receiving response...[-::-]")
+	fmt.Fprintf(v.statusBar, " [cyan::b]● Receiving response...[-::-]")
 }
 
 func (v *AIChatView) setStatusTool(toolName string) {
 	v.statusBar.Clear()
 	label := toolDisplayName(toolName)
-	fmt.Fprintf(v.statusBar, " [orange::b]%s[-::-]  [gray::-](working)[-::-]", label)
+	fmt.Fprintf(v.statusBar, " [orange::b]⚡ %s[-::-]", label)
 }
 
 // --------------------------------------------------------------------------
@@ -301,6 +342,7 @@ func (v *AIChatView) sendMessage(text string) {
 		return
 	}
 	v.streaming = true
+	v.streamingHeader = false
 	v.mu.Unlock()
 
 	// Disable input while processing.
@@ -327,12 +369,12 @@ func (v *AIChatView) sendMessage(text string) {
 		return
 	}
 
-	var response strings.Builder
-	var respMu sync.Mutex
+	var streamedContent strings.Builder
+	var streamMu sync.Mutex
 	err := ai.Client.Send(context.Background(), text, &chatListener{
-		view:     v,
-		response: &response,
-		mu:       &respMu,
+		view:            v,
+		streamedContent: &streamedContent,
+		mu:              &streamMu,
 	})
 
 	if err != nil {
@@ -341,13 +383,18 @@ func (v *AIChatView) sendMessage(text string) {
 		return
 	}
 
-	// AIResponseComplete already wrote to response; display it.
-	respMu.Lock()
-	resp := response.String()
-	respMu.Unlock()
+	// Save the final response to history for persistence.
+	streamMu.Lock()
+	finalContent := streamedContent.String()
+	streamMu.Unlock()
 
-	if resp != "" {
-		v.appendMessage("assistant", resp)
+	if finalContent != "" {
+		// Don't re-render — already streamed to output. Just persist.
+		msg := chatMessage{role: "assistant", content: finalContent}
+		v.history = append(v.history, msg)
+		globalChatMu.Lock()
+		globalChatHistory = append(globalChatHistory, msg)
+		globalChatMu.Unlock()
 	}
 }
 
@@ -355,32 +402,73 @@ func (v *AIChatView) sendMessage(text string) {
 // Message rendering
 
 func (v *AIChatView) appendMessage(role, content string) {
-	v.history = append(v.history, chatMessage{role: role, content: content})
+	msg := chatMessage{role: role, content: content}
+	v.history = append(v.history, msg)
 
-	s := v.app.Styles
+	// Persist to global store so history survives view recreation.
+	globalChatMu.Lock()
+	globalChatHistory = append(globalChatHistory, msg)
+	globalChatMu.Unlock()
+
 	v.app.QueueUpdateDraw(func() {
-		switch role {
-		case "user":
-			fmt.Fprintf(v.output, "\n  [%s::b]You[-::-]\n", s.Frame().Title.HighlightColor)
-			fmt.Fprintf(v.output, "  %s\n", content)
-
-		case "assistant":
-			fmt.Fprintf(v.output, "\n  [%s::b]Copilot[-::-]\n", s.Frame().Status.AddColor)
-			v.renderFormattedContent(content)
-
-		case "system":
-			fmt.Fprintf(v.output, "\n  [gray::-]%s[-::-]\n", content)
-
-		case "reasoning":
-			fmt.Fprintf(v.output, "\n  [%s::di]Thinking: %s[-::-]\n", s.Frame().Menu.FgColor, content)
-		}
+		v.renderMessage(role, content)
 		v.output.ScrollToEnd()
 	})
 }
 
+// renderMessage writes a formatted message directly to the output.
+// Must be called from the UI goroutine or during Init (before display).
+func (v *AIChatView) renderMessage(role, content string) {
+	s := v.app.Styles
+	hlColor := s.Frame().Title.HighlightColor
+	dimColor := s.Frame().Menu.FgColor
+
+	switch role {
+	case "user":
+		fmt.Fprintf(v.output, "\n  [%s::d]────────────────────────────────[-::-]\n", dimColor)
+		fmt.Fprintf(v.output, "  [%s::b]▶ You[-::-]\n", hlColor)
+		fmt.Fprintf(v.output, "  %s\n", content)
+
+	case "assistant":
+		fmt.Fprintf(v.output, "\n  [%s::d]────────────────────────────────[-::-]\n", dimColor)
+		fmt.Fprintf(v.output, "  [%s::b]✦ Copilot[-::-]\n", s.Frame().Status.AddColor)
+		v.renderFormattedContent(content)
+
+	case "system":
+		fmt.Fprintf(v.output, "\n  [gray::d]%s[-::-]\n", content)
+
+	case "reasoning":
+		fmt.Fprintf(v.output, "  [%s::d]○ Thinking: %s[-::-]\n", dimColor, content)
+
+	case "activity":
+		fmt.Fprintf(v.output, "  [%s::d]  ⚡ %s[-::-]\n", dimColor, content)
+	}
+}
+
+// restoreHistory replays persisted chat messages into the view.
+// Returns true if history was restored.
+func (v *AIChatView) restoreHistory() bool {
+	globalChatMu.Lock()
+	msgs := make([]chatMessage, len(globalChatHistory))
+	copy(msgs, globalChatHistory)
+	globalChatMu.Unlock()
+
+	if len(msgs) == 0 {
+		return false
+	}
+
+	v.history = msgs
+	for _, msg := range msgs {
+		v.renderMessage(msg.role, msg.content)
+	}
+	v.output.ScrollToEnd()
+
+	return true
+}
+
 func (v *AIChatView) appendError(msg string) {
 	v.app.QueueUpdateDraw(func() {
-		fmt.Fprintf(v.output, "\n  [red::b]Error:[-::-] [red::-]%s[-::-]\n", msg)
+		fmt.Fprintf(v.output, "\n  [red::b]✖ Error:[-::-] [red::-]%s[-::-]\n", msg)
 		v.output.ScrollToEnd()
 	})
 }
@@ -467,16 +555,19 @@ func (v *AIChatView) printWelcome() {
 	s := v.app.Styles
 	hlColor := s.Frame().Title.HighlightColor
 	dimColor := s.Frame().Menu.FgColor
+	addColor := s.Frame().Status.AddColor
 
 	welcome := fmt.Sprintf(
-		"  [%s::b]K9s AI Assistant[-::-]  [%s::d](Powered by GitHub Copilot)[-::-]\n\n"+
-			"  [%s::-]Ask anything about your Kubernetes cluster:[-::-]\n"+
-			"  [%s::-]  > Why is pod X crashing?[-::-]\n"+
-			"  [%s::-]  > Summarize cluster health[-::-]\n"+
-			"  [%s::-]  > Check RBAC for user admin[-::-]\n",
-		hlColor, dimColor,
+		"\n  [%s::b]✦ K9s AI Assistant[-::-]  [%s::d]Powered by GitHub Copilot[-::-]\n\n"+
+			"  [%s::-]Ask me anything about your cluster. I can:[-::-]\n"+
+			"  [%s::-]  ▶[-::-] Diagnose pod crashes, OOM kills, image pull errors\n"+
+			"  [%s::-]  ▶[-::-] Fix deployments by patching, scaling, or restarting\n"+
+			"  [%s::-]  ▶[-::-] Analyze events, logs, RBAC, and cluster health\n\n"+
+			"  [%s::d]PgUp/PgDn to scroll  ·  Ctrl+C clear  ·  Ctrl+R reset session[-::-]\n",
+		addColor, dimColor,
 		dimColor,
-		dimColor, dimColor, dimColor,
+		hlColor, hlColor, hlColor,
+		dimColor,
 	)
 	fmt.Fprint(v.output, welcome)
 }
@@ -515,29 +606,26 @@ func (v *AIChatView) restorePlaceholder() {
 }
 
 // SendDiagnostic sends a diagnostic prompt with pre-filled context.
-// The full prompt is sent to the AI silently; the user sees a short
-// system message while tool activity is displayed in real time.
+// The prompt is shown as a user message so the user can see what was asked.
 func (v *AIChatView) SendDiagnostic(resourceKind, resourceName, namespace string) {
 	prompt := fmt.Sprintf(
 		"Diagnose the %s '%s' in namespace '%s'. Check its status, recent events, logs if applicable, and suggest fixes for any issues.",
 		resourceKind, resourceName, namespace,
 	)
 
-	label := fmt.Sprintf("%s/%s", resourceKind, resourceName)
-	if namespace != "" {
-		label = fmt.Sprintf("%s/%s (ns: %s)", resourceKind, resourceName, namespace)
-	}
-	v.appendMessage("system", fmt.Sprintf("Diagnosing %s ...", label))
+	v.appendMessage("user", prompt)
 	go v.sendMessage(prompt)
 }
 
 // --------------------------------------------------------------------------
 // chatListener implements ai.Listener for streaming responses.
+// It writes streamed deltas directly to the output in real time so the user
+// sees the response building up.
 
 type chatListener struct {
-	view     *AIChatView
-	response *strings.Builder
-	mu       *sync.Mutex
+	view            *AIChatView
+	streamedContent *strings.Builder
+	mu              *sync.Mutex
 }
 
 func (l *chatListener) AIResponseStart() {
@@ -548,21 +636,47 @@ func (l *chatListener) AIResponseStart() {
 
 func (l *chatListener) AIResponseDelta(delta string) {
 	l.mu.Lock()
-	l.response.WriteString(delta)
+	l.streamedContent.WriteString(delta)
 	l.mu.Unlock()
+
+	// Stream the delta directly to the output so the user sees it live.
+	l.view.app.QueueUpdateDraw(func() {
+		// Print the Copilot header once at start of streaming.
+		l.view.mu.Lock()
+		if !l.view.streamingHeader {
+			l.view.streamingHeader = true
+			l.view.mu.Unlock()
+			s := l.view.app.Styles
+			dimColor := s.Frame().Menu.FgColor
+			fmt.Fprintf(l.view.output, "\n  [%s::d]────────────────────────────────[-::-]\n", dimColor)
+			fmt.Fprintf(l.view.output, "  [%s::b]✦ Copilot[-::-]\n  ", s.Frame().Status.AddColor)
+		} else {
+			l.view.mu.Unlock()
+		}
+		// Write the raw delta text.
+		fmt.Fprint(l.view.output, delta)
+		l.view.output.ScrollToEnd()
+		l.view.setStatusStreaming()
+	})
 }
 
 func (l *chatListener) AIResponseComplete(text string) {
 	if text != "" {
 		l.mu.Lock()
-		l.response.Reset()
-		l.response.WriteString(text)
+		l.streamedContent.Reset()
+		l.streamedContent.WriteString(text)
 		l.mu.Unlock()
 	}
+	// Add trailing newline after streamed content.
+	l.view.app.QueueUpdateDraw(func() {
+		fmt.Fprint(l.view.output, "\n")
+		l.view.output.ScrollToEnd()
+	})
 }
 
 func (l *chatListener) AIResponseFailed(err error) {
 	slog.Error("AI streaming failed", slogs.Error, err)
+	l.view.appendError(err.Error())
 }
 
 func (l *chatListener) AIReasoningDelta(content string) {
@@ -572,13 +686,29 @@ func (l *chatListener) AIReasoningDelta(content string) {
 }
 
 func (l *chatListener) AIReasoningComplete(content string) {
-	l.view.appendMessage("reasoning", content)
+	l.view.app.QueueUpdateDraw(func() {
+		s := l.view.app.Styles
+		dimColor := s.Frame().Menu.FgColor
+		fmt.Fprintf(l.view.output, "  [%s::d]○ Thinking: %s[-::-]\n", dimColor, content)
+		l.view.output.ScrollToEnd()
+	})
 }
 
 func (l *chatListener) AIToolStart(toolName string) {
 	l.view.app.QueueUpdateDraw(func() {
 		l.view.setStatusTool(toolName)
-		l.view.appendActivity(toolDisplayName(toolName))
+		s := l.view.app.Styles
+		dimColor := s.Frame().Menu.FgColor
+		label := toolDisplayName(toolName)
+		fmt.Fprintf(l.view.output, "  [%s::d]  ⚡ %s[-::-]\n", dimColor, label)
+		l.view.output.ScrollToEnd()
+
+		// Also persist to history.
+		msg := chatMessage{role: "activity", content: label, activity: true}
+		l.view.history = append(l.view.history, msg)
+		globalChatMu.Lock()
+		globalChatHistory = append(globalChatHistory, msg)
+		globalChatMu.Unlock()
 	})
 }
 
@@ -586,16 +716,6 @@ func (l *chatListener) AIToolComplete(toolName string) {
 	l.view.app.QueueUpdateDraw(func() {
 		l.view.setStatusThinking()
 	})
-}
-
-// --------------------------------------------------------------------------
-// Activity rendering (behind-the-scenes visibility)
-
-func (v *AIChatView) appendActivity(label string) {
-	s := v.app.Styles
-	dimColor := s.Frame().Menu.FgColor
-	fmt.Fprintf(v.output, "  [%s::di]⚡ %s[-::-]\n", dimColor, label)
-	v.output.ScrollToEnd()
 }
 
 // toolDisplayName maps internal tool names to user-friendly descriptions.
@@ -617,6 +737,14 @@ func toolDisplayName(name string) string {
 		return "Running pod diagnostics..."
 	case "check_rbac":
 		return "Checking RBAC permissions..."
+	case "patch_resource":
+		return "Patching resource..."
+	case "scale_resource":
+		return "Scaling resource..."
+	case "restart_resource":
+		return "Restarting resource..."
+	case "delete_resource":
+		return "Deleting resource..."
 	default:
 		return fmt.Sprintf("Running %s...", name)
 	}

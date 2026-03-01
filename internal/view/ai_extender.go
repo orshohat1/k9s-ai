@@ -88,10 +88,6 @@ func sendExplainPrompt(chat *AIChatView, kind, name, ns string) {
 		kind, name, ns,
 	)
 
-	label := fmt.Sprintf("%s/%s", kind, name)
-	if ns != "" {
-		label = fmt.Sprintf("%s/%s (ns: %s)", kind, name, ns)
-	}
-	chat.appendMessage("system", fmt.Sprintf("Explaining %s ...", label))
+	chat.appendMessage("user", prompt)
 	chat.sendMessage(prompt)
 }
