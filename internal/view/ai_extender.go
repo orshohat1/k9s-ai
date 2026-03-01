@@ -4,19 +4,16 @@
 package view
 
 import (
-	"context"
 	"fmt"
-	"log/slog"
-	"strings"
 
 	"github.com/derailed/k9s/internal/ai"
 	"github.com/derailed/k9s/internal/client"
-	"github.com/derailed/k9s/internal/slogs"
 	"github.com/derailed/k9s/internal/ui"
 	"github.com/derailed/tcell/v2"
 )
 
 // AIExtender adds AI-powered actions to resource viewers.
+// It wraps workload-oriented views with Diagnose/Explain/Chat keybindings.
 type AIExtender struct {
 	ResourceViewer
 }
@@ -32,12 +29,8 @@ func NewAIExtender(v ResourceViewer) ResourceViewer {
 }
 
 func (e *AIExtender) bindKeys(aa *ui.KeyActions) {
-	if ai.Client == nil || !ai.Client.IsEnabled() {
-		return
-	}
 	aa.Bulk(ui.KeyMap{
 		ui.KeyShiftA: ui.NewKeyAction("AI Diagnose", e.diagnoseCmd, true),
-		tcell.KeyCtrlI: ui.NewKeyAction("AI Chat", e.chatCmd, true),
 		ui.KeyShiftX: ui.NewKeyAction("AI Explain", e.explainCmd, true),
 	})
 }
@@ -52,22 +45,13 @@ func (e *AIExtender) diagnoseCmd(*tcell.EventKey) *tcell.EventKey {
 	kind := e.GVR().R()
 
 	chat := NewAIChatView()
+	chat.SetResourceContext(kind, name, ns)
 	if err := e.App().inject(chat, false); err != nil {
 		e.App().Flash().Err(err)
 		return nil
 	}
 
 	chat.SendDiagnostic(kind, name, ns)
-
-	return nil
-}
-
-func (e *AIExtender) chatCmd(*tcell.EventKey) *tcell.EventKey {
-	chat := NewAIChatView()
-	if err := e.App().inject(chat, false); err != nil {
-		e.App().Flash().Err(err)
-		return nil
-	}
 
 	return nil
 }
@@ -82,19 +66,20 @@ func (e *AIExtender) explainCmd(*tcell.EventKey) *tcell.EventKey {
 	kind := e.GVR().R()
 
 	chat := NewAIChatView()
+	chat.SetResourceContext(kind, name, ns)
 	if err := e.App().inject(chat, false); err != nil {
 		e.App().Flash().Err(err)
 		return nil
 	}
 
-	go e.sendExplainPrompt(chat, kind, name, ns)
+	go sendExplainPrompt(chat, kind, name, ns)
 
 	return nil
 }
 
-func (e *AIExtender) sendExplainPrompt(chat *AIChatView, kind, name, ns string) {
+func sendExplainPrompt(chat *AIChatView, kind, name, ns string) {
 	if ai.Client == nil || !ai.Client.IsEnabled() {
-		chat.appendMessage("system", "[red]AI is not enabled.[-]")
+		chat.appendError("AI is not enabled.")
 		return
 	}
 
@@ -103,23 +88,10 @@ func (e *AIExtender) sendExplainPrompt(chat *AIChatView, kind, name, ns string) 
 		kind, name, ns,
 	)
 
-	chat.appendMessage("user", prompt)
-
-	var response strings.Builder
-	err := ai.Client.Send(context.Background(), prompt, &chatListener{
-		view:     chat,
-		response: &response,
-	})
-
-	if err != nil {
-		slog.Error("AI explain failed", slogs.Error, err)
-		chat.appendMessage("assistant", fmt.Sprintf("[red]Error: %v[-]", err))
-		return
+	label := fmt.Sprintf("%s/%s", kind, name)
+	if ns != "" {
+		label = fmt.Sprintf("%s/%s (ns: %s)", kind, name, ns)
 	}
-
-	chat.app.QueueUpdateDraw(func() {
-		if resp := response.String(); resp != "" {
-			chat.appendMessage("assistant", resp)
-		}
-	})
+	chat.appendMessage("system", fmt.Sprintf("Explaining %s ...", label))
+	chat.sendMessage(prompt)
 }

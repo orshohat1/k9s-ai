@@ -132,7 +132,11 @@ func (a *App) Init(version string, _ int) error {
 	if a.Config.K9s.ImageScans.Enable {
 		a.initImgScanner(version)
 	}
-	if a.Config.K9s.AI.Enabled {
+	if a.Config.K9s.AI.IsEnabled() {
+		a.Menu().SetPersistentHints(model.MenuHints{
+			{Mnemonic: ":ai", Description: "AI Chat", Visible: true},
+			{Mnemonic: ":ai models", Description: "AI Models", Visible: true},
+		})
 		a.initAI()
 	}
 	a.ReloadStyles()
@@ -146,9 +150,11 @@ func (a *App) initAI() {
 	}(time.Now())
 
 	aiClient := ai.NewAIClient(a.Config.K9s.AI, slog.Default())
+	ai.Client = aiClient
+
 	if err := aiClient.Init(context.Background()); err != nil {
 		slog.Error("AI client init failed", slogs.Error, err)
-		a.Flash().Warn("AI init failed: " + err.Error())
+		a.Flash().Warn("AI init failed (will retry on use): " + err.Error())
 		return
 	}
 
@@ -158,7 +164,6 @@ func (a *App) initAI() {
 		aiClient.SetTools(tf.BuildTools())
 	}
 
-	ai.Client = aiClient
 	slog.Info("🤖 AI/Copilot integration initialized")
 }
 

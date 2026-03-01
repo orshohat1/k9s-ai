@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -24,23 +25,24 @@ import (
 const (
 	aiChatTitle    = "AI Chat"
 	aiChatTitleFmt = " AI Chat [hilite:bg:b](%s)[fg:bg:-] "
-	aiPromptLabel  = "[::b]> [::]"
-	aiThinking     = "[yellow::b]AI is thinking...[-::-]"
 )
 
 // AIChatView represents the AI chat interface.
 type AIChatView struct {
 	*tview.Flex
 
-	app        *App
-	output     *tview.TextView
-	input      *tview.InputField
-	indicator  *AIChatIndicator
-	actions    *ui.KeyActions
-	history    []chatMessage
-	streaming  bool
-	fullScreen bool
-	mu         sync.Mutex
+	app          *App
+	output       *tview.TextView
+	input        *tview.InputField
+	statusBar    *tview.TextView
+	actions      *ui.KeyActions
+	history      []chatMessage
+	streaming    bool
+	fullScreen   bool
+	resKind      string
+	resName      string
+	resNamespace string
+	mu           sync.Mutex
 }
 
 type chatMessage struct {
@@ -74,11 +76,7 @@ func (v *AIChatView) Init(ctx context.Context) error {
 	v.SetBorder(true)
 	v.SetBorderPadding(0, 0, 1, 1)
 
-	// Indicator bar (status line at top)
-	v.indicator = NewAIChatIndicator(v.app.Styles)
-	v.AddItem(v.indicator, 1, 1, false)
-
-	// Configure output area
+	// Configure output area.
 	v.output.SetDynamicColors(true)
 	v.output.SetScrollable(true)
 	v.output.SetWrap(true)
@@ -87,19 +85,27 @@ func (v *AIChatView) Init(ctx context.Context) error {
 		v.app.Draw()
 	})
 
-	// Configure input area
-	v.input.SetLabel(aiPromptLabel)
+	// Status bar between output and input.
+	v.statusBar = tview.NewTextView()
+	v.statusBar.SetDynamicColors(true)
+	v.statusBar.SetTextAlign(tview.AlignLeft)
+
+	// Configure input area.
+	v.input.SetLabel("[::b]> [::]")
 	v.input.SetDoneFunc(v.handleInput)
-	v.input.SetPlaceholder("Ask about your cluster, e.g. 'Why is my pod crashing?'")
+	v.input.SetPlaceholder("Ask anything about your cluster...")
 
 	v.AddItem(v.output, 0, 1, false)
+	v.AddItem(v.statusBar, 1, 0, false)
 	v.AddItem(v.input, 1, 0, true)
 
 	v.bindKeys()
 	v.SetInputCapture(v.keyboard)
 	v.StylesChanged(v.app.Styles)
 	v.updateTitle()
+	v.setStatusReady()
 	v.printWelcome()
+	v.applyResourceContext()
 
 	return nil
 }
@@ -110,6 +116,7 @@ func (v *AIChatView) StylesChanged(s *config.Styles) {
 	v.SetBackgroundColor(views.Log.BgColor.Color())
 	v.output.SetTextColor(views.Log.FgColor.Color())
 	v.output.SetBackgroundColor(views.Log.BgColor.Color())
+	v.statusBar.SetBackgroundColor(views.Log.BgColor.Color())
 
 	v.input.SetLabelColor(s.Frame().Title.HighlightColor.Color())
 	v.input.SetFieldBackgroundColor(views.Log.BgColor.Color())
@@ -120,8 +127,8 @@ func (v *AIChatView) StylesChanged(s *config.Styles) {
 func (v *AIChatView) updateTitle() {
 	styles := v.app.Styles.Frame()
 	modelName := "copilot"
-	if ai.Client != nil && v.app.Config != nil && v.app.Config.K9s.AI.Model != "" {
-		modelName = v.app.Config.K9s.AI.Model
+	if ai.Client != nil {
+		modelName = ai.Client.ActiveModel()
 	}
 	skillInfo := ""
 	if ai.Client != nil {
@@ -144,6 +151,7 @@ func (*AIChatView) Name() string { return aiChatTitle }
 // Start starts the chat view.
 func (v *AIChatView) Start() {
 	v.app.Styles.AddListener(v)
+	v.updateTitle()
 	v.app.SetFocus(v.input)
 }
 
@@ -222,11 +230,6 @@ func (v *AIChatView) toggleFullScreenCmd(*tcell.EventKey) *tcell.EventKey {
 	v.fullScreen = !v.fullScreen
 	v.SetFullScreen(v.fullScreen)
 	v.SetBorder(!v.fullScreen)
-	if v.fullScreen {
-		v.output.SetBorderPadding(0, 0, 0, 0)
-	} else {
-		v.output.SetBorderPadding(0, 0, 0, 0)
-	}
 	return nil
 }
 
@@ -238,8 +241,46 @@ func (v *AIChatView) modelsCmd(*tcell.EventKey) *tcell.EventKey {
 	return nil
 }
 
+// --------------------------------------------------------------------------
+// Status bar helpers
+
+func (v *AIChatView) setStatusReady() {
+	v.statusBar.Clear()
+	fmt.Fprintf(v.statusBar, " [green::b]Ready[-::-]")
+}
+
+func (v *AIChatView) setStatusThinking() {
+	v.statusBar.Clear()
+	fmt.Fprintf(v.statusBar, " [yellow::b]Thinking...[-::-]  [gray::-](please wait)[-::-]")
+}
+
+func (v *AIChatView) setStatusReasoning() {
+	v.statusBar.Clear()
+	fmt.Fprintf(v.statusBar, " [magenta::b]Reasoning...[-::-]  [gray::-](model is thinking deeply)[-::-]")
+}
+
+func (v *AIChatView) setStatusStreaming() {
+	v.statusBar.Clear()
+	fmt.Fprintf(v.statusBar, " [cyan::b]Receiving response...[-::-]")
+}
+
+func (v *AIChatView) setStatusTool(toolName string) {
+	v.statusBar.Clear()
+	label := toolDisplayName(toolName)
+	fmt.Fprintf(v.statusBar, " [orange::b]%s[-::-]  [gray::-](working)[-::-]", label)
+}
+
+// --------------------------------------------------------------------------
+// Input handling
+
 func (v *AIChatView) handleInput(key tcell.Key) {
 	if key != tcell.KeyEnter {
+		return
+	}
+	v.mu.Lock()
+	busy := v.streaming
+	v.mu.Unlock()
+	if busy {
 		return
 	}
 
@@ -250,7 +291,6 @@ func (v *AIChatView) handleInput(key tcell.Key) {
 	v.input.SetText("")
 
 	v.appendMessage("user", text)
-
 	go v.sendMessage(text)
 }
 
@@ -263,195 +303,265 @@ func (v *AIChatView) sendMessage(text string) {
 	v.streaming = true
 	v.mu.Unlock()
 
+	// Disable input while processing.
+	v.app.QueueUpdateDraw(func() {
+		v.input.SetAcceptanceFunc(func(string, rune) bool { return false })
+		v.input.SetPlaceholder("Waiting for response...")
+		v.setStatusThinking()
+	})
+
 	defer func() {
 		v.mu.Lock()
 		v.streaming = false
 		v.mu.Unlock()
 		v.app.QueueUpdateDraw(func() {
-			v.indicator.SetStatus("ready")
+			v.input.SetAcceptanceFunc(nil)
+			v.restorePlaceholder()
+			v.setStatusReady()
+			v.app.SetFocus(v.input)
 		})
 	}()
 
-	if ai.Client == nil || !ai.Client.IsEnabled() {
-		v.appendMessage("system", "[red]AI is not enabled. Set `ai.enabled: true` in your k9s config.[-]")
+	if ai.Client == nil {
+		v.appendError("AI client not available. Check logs for initialization errors.")
 		return
 	}
 
-	// Show thinking indicator
-	v.app.QueueUpdateDraw(func() {
-		v.indicator.SetStatus("thinking")
-		fmt.Fprintf(v.output, "\n%s", aiThinking)
-	})
-
 	var response strings.Builder
+	var respMu sync.Mutex
 	err := ai.Client.Send(context.Background(), text, &chatListener{
 		view:     v,
 		response: &response,
+		mu:       &respMu,
 	})
 
 	if err != nil {
 		slog.Error("AI request failed", slogs.Error, err)
-		v.app.QueueUpdateDraw(func() {
-			v.clearThinkingIndicator()
-			v.appendMessage("assistant", fmt.Sprintf("[red]Error: %v[-]", err))
-		})
+		v.appendError(err.Error())
 		return
 	}
 
-	v.app.QueueUpdateDraw(func() {
-		v.clearThinkingIndicator()
-		if resp := response.String(); resp != "" {
-			v.appendMessage("assistant", resp)
-		}
-	})
-}
+	respMu.Lock()
+	resp := response.String()
+	respMu.Unlock()
 
-func (v *AIChatView) clearThinkingIndicator() {
-	text := v.output.GetText(false)
-	if idx := strings.LastIndex(text, aiThinking); idx >= 0 {
-		v.output.Clear()
-		fmt.Fprint(v.output, text[:idx])
+	if resp != "" {
+		v.app.QueueUpdateDraw(func() {
+			v.appendMessage("assistant", resp)
+		})
+	} else {
+		slog.Warn("AI response was empty after Send() completed")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Message rendering
 
 func (v *AIChatView) appendMessage(role, content string) {
 	v.history = append(v.history, chatMessage{role: role, content: content})
 
 	s := v.app.Styles
-	var prefix string
-	switch role {
-	case "user":
-		prefix = fmt.Sprintf("[%s::b]You:[-::-] ", s.Frame().Title.HighlightColor)
-	case "assistant":
-		prefix = fmt.Sprintf("[%s::b]Copilot:[-::-] ", s.Frame().Status.AddColor)
-	case "system":
-		prefix = fmt.Sprintf("[%s::b]System:[-::-] ", s.Frame().Status.ModifyColor)
-	case "reasoning":
-		prefix = fmt.Sprintf("[%s::di]Reasoning:[-::-] ", s.Frame().Menu.FgColor)
-	}
-
 	v.app.QueueUpdateDraw(func() {
-		fmt.Fprintf(v.output, "\n%s%s\n", prefix, content)
+		switch role {
+		case "user":
+			fmt.Fprintf(v.output, "\n  [%s::b]You[-::-]\n", s.Frame().Title.HighlightColor)
+			fmt.Fprintf(v.output, "  %s\n", content)
+
+		case "assistant":
+			fmt.Fprintf(v.output, "\n  [%s::b]Copilot[-::-]\n", s.Frame().Status.AddColor)
+			v.renderFormattedContent(content)
+
+		case "system":
+			fmt.Fprintf(v.output, "\n  [gray::i]%s[-::-]\n", content)
+
+		case "reasoning":
+			fmt.Fprintf(v.output, "\n  [%s::di]Thinking: %s[-::-]\n", s.Frame().Menu.FgColor, content)
+		}
 		v.output.ScrollToEnd()
 	})
 }
 
+func (v *AIChatView) appendError(msg string) {
+	v.app.QueueUpdateDraw(func() {
+		fmt.Fprintf(v.output, "\n  [red::b]Error:[-::-] [red::-]%s[-::-]\n", msg)
+		v.output.ScrollToEnd()
+	})
+}
+
+// renderFormattedContent converts markdown-like content to a cleaner terminal display.
+func (v *AIChatView) renderFormattedContent(content string) {
+	lines := strings.Split(content, "\n")
+	inCodeBlock := false
+
+	s := v.app.Styles
+	codeColor := s.Frame().Menu.FgColor
+	highlightColor := s.Frame().Title.HighlightColor
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Handle code block fences.
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+			if inCodeBlock {
+				lang := strings.TrimPrefix(trimmed, "```")
+				lang = strings.TrimSpace(lang)
+				if lang != "" {
+					fmt.Fprintf(v.output, "  [%s::d]--- %s ---[-::-]\n", codeColor, lang)
+				} else {
+					fmt.Fprintf(v.output, "  [%s::d]-----------[-::-]\n", codeColor)
+				}
+			} else {
+				fmt.Fprintf(v.output, "  [%s::d]-----------[-::-]\n", codeColor)
+			}
+			continue
+		}
+
+		if inCodeBlock {
+			fmt.Fprintf(v.output, "  [%s::-]  %s[-::-]\n", highlightColor, line)
+			continue
+		}
+
+		// Headers: ## Foo -> bold.
+		if strings.HasPrefix(trimmed, "#") {
+			text := strings.TrimLeft(trimmed, "# ")
+			fmt.Fprintf(v.output, "\n  [%s::b]%s[-::-]\n", highlightColor, text)
+			continue
+		}
+
+		// Bullet points.
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			rest := trimmed[2:]
+			rest = renderInlineFormatting(rest)
+			fmt.Fprintf(v.output, "  [%s::-]>[-::-] %s\n", highlightColor, rest)
+			continue
+		}
+
+		// Numbered lists.
+		if matched, _ := regexp.MatchString(`^\d+\.\s`, trimmed); matched {
+			formatted := renderInlineFormatting(trimmed)
+			fmt.Fprintf(v.output, "  %s\n", formatted)
+			continue
+		}
+
+		// Regular text.
+		formatted := renderInlineFormatting(line)
+		fmt.Fprintf(v.output, "  %s\n", formatted)
+	}
+}
+
+// renderInlineFormatting converts inline markdown to tview colors.
+func renderInlineFormatting(text string) string {
+	// Bold: **text** -> bold.
+	boldRe := regexp.MustCompile(`\*\*(.+?)\*\*`)
+	text = boldRe.ReplaceAllString(text, "[::b]$1[-::-]")
+
+	// Inline code: `text` -> highlighted.
+	codeRe := regexp.MustCompile("`([^`]+)`")
+	text = codeRe.ReplaceAllString(text, "[aqua::-]$1[-::-]")
+
+	return text
+}
+
+// --------------------------------------------------------------------------
+// Welcome / context
+
 func (v *AIChatView) printWelcome() {
 	s := v.app.Styles
-	highlightColor := s.Frame().Title.HighlightColor
-	fgColor := s.Views().Log.FgColor
+	hlColor := s.Frame().Title.HighlightColor
 	dimColor := s.Frame().Menu.FgColor
 
-	welcome := fmt.Sprintf(`[%s::b]K9s AI Chat (Powered by GitHub Copilot)[-::-]
-
-[%s]Ask questions about your Kubernetes cluster:[-]
-[%s]  * "Why is pod X crashing?"[-]
-[%s]  * "Diagnose deployment Y"[-]
-[%s]  * "What events are happening in namespace Z?"[-]
-[%s]  * "Check RBAC for user admin"[-]
-[%s]  * "Summarize cluster health"[-]
-
-[%s]Esc=Back  Ctrl-C=Clear  Ctrl-R=Reset  Ctrl-S=Save  Ctrl-F=FullScreen[-]
-`,
-		highlightColor,
-		fgColor,
-		dimColor, dimColor, dimColor, dimColor, dimColor,
+	welcome := fmt.Sprintf(
+		"  [%s::b]K9s AI Assistant[-::-]  [%s::d](Powered by GitHub Copilot)[-::-]\n\n"+
+			"  [%s::-]Ask anything about your Kubernetes cluster:[-::-]\n"+
+			"  [%s::-]  > Why is pod X crashing?[-::-]\n"+
+			"  [%s::-]  > Summarize cluster health[-::-]\n"+
+			"  [%s::-]  > Check RBAC for user admin[-::-]\n",
+		hlColor, dimColor,
 		dimColor,
+		dimColor, dimColor, dimColor,
 	)
 	fmt.Fprint(v.output, welcome)
 }
 
+// SetResourceContext sets the resource context for the chat view.
+func (v *AIChatView) SetResourceContext(kind, name, ns string) {
+	v.resKind = kind
+	v.resName = name
+	v.resNamespace = ns
+}
+
+func (v *AIChatView) applyResourceContext() {
+	if v.resKind == "" || v.resName == "" {
+		return
+	}
+
+	s := v.app.Styles
+	hlColor := s.Frame().Title.HighlightColor
+	dimColor := s.Frame().Menu.FgColor
+
+	label := fmt.Sprintf("%s/%s", v.resKind, v.resName)
+	if v.resNamespace != "" {
+		label = fmt.Sprintf("%s/%s (ns: %s)", v.resKind, v.resName, v.resNamespace)
+	}
+
+	fmt.Fprintf(v.output, "\n  [%s::b]Resource:[-::-] [%s::-]%s[-::-]\n", hlColor, dimColor, label)
+	v.input.SetPlaceholder(fmt.Sprintf("Ask about %s/%s...", v.resKind, v.resName))
+}
+
+func (v *AIChatView) restorePlaceholder() {
+	if v.resKind != "" && v.resName != "" {
+		v.input.SetPlaceholder(fmt.Sprintf("Ask about %s/%s...", v.resKind, v.resName))
+	} else {
+		v.input.SetPlaceholder("Ask anything about your cluster...")
+	}
+}
+
 // SendDiagnostic sends a diagnostic prompt with pre-filled context.
+// The full prompt is sent to the AI silently; the user sees a short
+// system message while tool activity is displayed in real time.
 func (v *AIChatView) SendDiagnostic(resourceKind, resourceName, namespace string) {
 	prompt := fmt.Sprintf(
 		"Diagnose the %s '%s' in namespace '%s'. Check its status, recent events, logs if applicable, and suggest fixes for any issues.",
 		resourceKind, resourceName, namespace,
 	)
 
-	v.appendMessage("user", prompt)
+	label := fmt.Sprintf("%s/%s", resourceKind, resourceName)
+	if namespace != "" {
+		label = fmt.Sprintf("%s/%s (ns: %s)", resourceKind, resourceName, namespace)
+	}
+	v.appendMessage("system", fmt.Sprintf("Diagnosing %s ...", label))
 	go v.sendMessage(prompt)
 }
 
-// ----------------------------------------------------------------------------
-// AIChatIndicator
-
-// AIChatIndicator represents the status bar for the AI chat view.
-type AIChatIndicator struct {
-	*tview.TextView
-
-	styles *config.Styles
-	status string
-}
-
-// NewAIChatIndicator returns a new chat indicator.
-func NewAIChatIndicator(styles *config.Styles) *AIChatIndicator {
-	ind := &AIChatIndicator{
-		TextView: tview.NewTextView(),
-		styles:   styles,
-		status:   "ready",
-	}
-	ind.SetTextAlign(tview.AlignCenter)
-	ind.SetDynamicColors(true)
-	ind.StylesChanged(styles)
-	ind.Refresh()
-	return ind
-}
-
-// StylesChanged notifies the indicator of skin changes.
-func (i *AIChatIndicator) StylesChanged(styles *config.Styles) {
-	i.styles = styles
-	i.SetBackgroundColor(styles.K9s.Views.Log.Indicator.BgColor.Color())
-	i.SetTextColor(styles.K9s.Views.Log.Indicator.FgColor.Color())
-	i.Refresh()
-}
-
-// SetStatus updates the displayed status.
-func (i *AIChatIndicator) SetStatus(status string) {
-	i.status = status
-	i.Refresh()
-}
-
-// Refresh redraws the indicator bar.
-func (i *AIChatIndicator) Refresh() {
-	ind := i.styles.K9s.Views.Log.Indicator
-	on := ind.ToggleOnColor
-	off := ind.ToggleOffColor
-
-	var statusColor config.Color
-	switch i.status {
-	case "thinking":
-		statusColor = on
-	default:
-		statusColor = off
-	}
-
-	i.Clear()
-	fmt.Fprintf(i, "[%s::b]<%s>[-::-]", statusColor, i.status)
-}
-
-// ----------------------------------------------------------------------------
-// chatListener
-
+// --------------------------------------------------------------------------
 // chatListener implements ai.Listener for streaming responses.
+
 type chatListener struct {
 	view     *AIChatView
 	response *strings.Builder
+	mu       *sync.Mutex
 }
 
 func (l *chatListener) AIResponseStart() {
 	l.view.app.QueueUpdateDraw(func() {
-		l.view.clearThinkingIndicator()
-		l.view.indicator.SetStatus("streaming")
+		l.view.setStatusStreaming()
 	})
 }
 
 func (l *chatListener) AIResponseDelta(delta string) {
+	l.mu.Lock()
 	l.response.WriteString(delta)
+	l.mu.Unlock()
 }
 
 func (l *chatListener) AIResponseComplete(text string) {
-	l.response.Reset()
-	l.response.WriteString(text)
+	if text != "" {
+		l.mu.Lock()
+		l.response.Reset()
+		l.response.WriteString(text)
+		l.mu.Unlock()
+	}
 }
 
 func (l *chatListener) AIResponseFailed(err error) {
@@ -460,10 +570,57 @@ func (l *chatListener) AIResponseFailed(err error) {
 
 func (l *chatListener) AIReasoningDelta(content string) {
 	l.view.app.QueueUpdateDraw(func() {
-		l.view.indicator.SetStatus("reasoning")
+		l.view.setStatusReasoning()
 	})
 }
 
 func (l *chatListener) AIReasoningComplete(content string) {
 	l.view.appendMessage("reasoning", content)
+}
+
+func (l *chatListener) AIToolStart(toolName string) {
+	l.view.app.QueueUpdateDraw(func() {
+		l.view.setStatusTool(toolName)
+		l.view.appendActivity(toolDisplayName(toolName))
+	})
+}
+
+func (l *chatListener) AIToolComplete(toolName string) {
+	l.view.app.QueueUpdateDraw(func() {
+		l.view.setStatusThinking()
+	})
+}
+
+// --------------------------------------------------------------------------
+// Activity rendering (behind-the-scenes visibility)
+
+func (v *AIChatView) appendActivity(label string) {
+	s := v.app.Styles
+	dimColor := s.Frame().Menu.FgColor
+	fmt.Fprintf(v.output, "  [%s::di]⚡ %s[-::-]\n", dimColor, label)
+	v.output.ScrollToEnd()
+}
+
+// toolDisplayName maps internal tool names to user-friendly descriptions.
+func toolDisplayName(name string) string {
+	switch name {
+	case "get_resource":
+		return "Fetching resource..."
+	case "list_resources":
+		return "Listing resources..."
+	case "describe_resource":
+		return "Describing resource..."
+	case "get_logs":
+		return "Fetching logs..."
+	case "get_events":
+		return "Checking events..."
+	case "get_cluster_health":
+		return "Checking cluster health..."
+	case "get_pod_diagnostics":
+		return "Running pod diagnostics..."
+	case "check_rbac":
+		return "Checking RBAC permissions..."
+	default:
+		return fmt.Sprintf("Running %s...", name)
+	}
 }

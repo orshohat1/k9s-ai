@@ -68,8 +68,9 @@ func coreViewers(vv MetaViewers) {
 
 func miscViewers(vv MetaViewers) {
 	vv[client.WkGVR] = MetaViewer{
-		viewerFn: NewWorkload,
+		viewerFn: wrapWithAI(NewWorkload),
 	}
+
 	vv[client.CtGVR] = MetaViewer{
 		viewerFn: NewContext,
 	}

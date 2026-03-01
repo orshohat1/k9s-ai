@@ -28,7 +28,8 @@ var menuRX = regexp.MustCompile(`\d`)
 type Menu struct {
 	*tview.Table
 
-	styles *config.Styles
+	styles          *config.Styles
+	persistentHints model.MenuHints
 }
 
 // NewMenu returns a new menu.
@@ -56,15 +57,20 @@ func (m *Menu) StylesChanged(s *config.Styles) {
 	}
 }
 
+// SetPersistentHints sets hints that appear on every screen.
+func (m *Menu) SetPersistentHints(hh model.MenuHints) {
+	m.persistentHints = hh
+}
+
 // StackPushed notifies a component was added.
 func (m *Menu) StackPushed(c model.Component) {
-	m.HydrateMenu(c.Hints())
+	m.HydrateMenu(append(c.Hints(), m.persistentHints...))
 }
 
 // StackPopped notifies a component was removed.
 func (m *Menu) StackPopped(_, top model.Component) {
 	if top != nil {
-		m.HydrateMenu(top.Hints())
+		m.HydrateMenu(append(top.Hints(), m.persistentHints...))
 	} else {
 		m.Clear()
 	}
@@ -72,7 +78,7 @@ func (m *Menu) StackPopped(_, top model.Component) {
 
 // StackTop notifies the top component.
 func (m *Menu) StackTop(t model.Component) {
-	m.HydrateMenu(t.Hints())
+	m.HydrateMenu(append(t.Hints(), m.persistentHints...))
 }
 
 // HydrateMenu populate menu ui from hints.

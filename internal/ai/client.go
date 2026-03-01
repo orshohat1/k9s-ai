@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/derailed/k9s/internal/config"
 	"github.com/derailed/k9s/internal/slogs"
@@ -28,6 +29,10 @@ type Listener interface {
 	AIReasoningDelta(content string)
 	// AIReasoningComplete is called when reasoning is done.
 	AIReasoningComplete(content string)
+	// AIToolStart is called when a tool begins executing.
+	AIToolStart(toolName string)
+	// AIToolComplete is called when a tool finishes executing.
+	AIToolComplete(toolName string)
 }
 
 // Client manages the GitHub Copilot SDK lifecycle.
@@ -69,7 +74,7 @@ func (c *AIClient) IsEnabled() bool {
 	c.mx.RLock()
 	defer c.mx.RUnlock()
 
-	return c.cfg.Enabled
+	return c.cfg.IsEnabled()
 }
 
 // Init initializes the Copilot SDK client and starts the CLI server.
@@ -77,7 +82,7 @@ func (c *AIClient) Init(ctx context.Context) error {
 	c.mx.Lock()
 	defer c.mx.Unlock()
 
-	if !c.cfg.Enabled {
+	if !c.cfg.IsEnabled() {
 		c.log.Info("AI features disabled")
 		return nil
 	}
@@ -89,6 +94,11 @@ func (c *AIClient) Init(ctx context.Context) error {
 
 	opts := &copilot.ClientOptions{
 		LogLevel: "error",
+	}
+
+	// Resolve the copilot CLI binary (check PATH, cache, or auto-download).
+	if cliPath := ResolveCopilotCLIPath(c.log); cliPath != "" {
+		opts.CLIPath = cliPath
 	}
 
 	// Wire GitHub authentication.
@@ -184,6 +194,13 @@ func (c *AIClient) ActiveModel() string {
 
 // ListModels returns the models available from the user's Copilot account.
 func (c *AIClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	// Lazy retry: if Init() failed before, try again now.
+	if !c.isInitialized() {
+		if err := c.Init(ctx); err != nil {
+			return nil, fmt.Errorf("AI not ready: %w", err)
+		}
+	}
+
 	c.mx.RLock()
 	defer c.mx.RUnlock()
 
@@ -218,9 +235,10 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 		systemMsg += "\n\n" + suffix
 	}
 	sessionCfg := &copilot.SessionConfig{
-		Model:     c.cfg.Model,
-		Streaming: c.cfg.Streaming,
-		Tools:     c.tools,
+		Model:               c.cfg.Model,
+		Streaming:            c.cfg.Streaming,
+		Tools:               c.tools,
+		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage: &copilot.SystemMessageConfig{
 			Content: systemMsg,
 		},
@@ -304,11 +322,29 @@ func (c *AIClient) EnsureSession(ctx context.Context) (*copilot.Session, error) 
 	return session, nil
 }
 
+// isInitialized returns true if the AI client has been successfully initialized.
+func (c *AIClient) isInitialized() bool {
+	c.mx.RLock()
+	defer c.mx.RUnlock()
+	return c.initialized
+}
+
 // Send sends a prompt to the AI and streams the response to the listener.
 func (c *AIClient) Send(ctx context.Context, prompt string, listener Listener) error {
 	if !c.IsEnabled() {
 		return fmt.Errorf("AI features are disabled. Enable in config: k9s.ai.enabled=true")
 	}
+
+	// Lazy retry: if Init() failed before, try again now.
+	if !c.isInitialized() {
+		if err := c.Init(ctx); err != nil {
+			return fmt.Errorf("AI not ready: %w", err)
+		}
+	}
+
+	// Apply a timeout so we never hang indefinitely.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
 
 	session, err := c.EnsureSession(ctx)
 	if err != nil {
@@ -318,50 +354,83 @@ func (c *AIClient) Send(ctx context.Context, prompt string, listener Listener) e
 	listener.AIResponseStart()
 
 	done := make(chan struct{})
+	errCh := make(chan error, 1)
+	var closeOnce sync.Once
 	var fullContent string
-	var responseErr error
+	var mu sync.Mutex
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
+		c.log.Debug("Session event", "type", string(event.Type))
+
 		switch event.Type {
-		case "assistant.message_delta":
+		case copilot.AssistantMessageDelta:
 			if event.Data.DeltaContent != nil {
 				listener.AIResponseDelta(*event.Data.DeltaContent)
 			}
-		case "assistant.message":
+		case copilot.AssistantMessage:
 			if event.Data.Content != nil {
+				mu.Lock()
 				fullContent = *event.Data.Content
+				mu.Unlock()
 			}
-		case "assistant.reasoning_delta":
+		case copilot.AssistantReasoningDelta:
 			if event.Data.DeltaContent != nil {
 				listener.AIReasoningDelta(*event.Data.DeltaContent)
 			}
-		case "assistant.reasoning":
+		case copilot.AssistantReasoning:
 			if event.Data.Content != nil {
 				listener.AIReasoningComplete(*event.Data.Content)
 			}
-		case "session.idle":
-			close(done)
+		case copilot.ToolExecutionStart:
+			if event.Data.ToolName != nil {
+				c.log.Debug("Tool start", "tool", *event.Data.ToolName)
+				listener.AIToolStart(*event.Data.ToolName)
+			}
+		case copilot.ToolExecutionComplete:
+			if event.Data.ToolName != nil {
+				c.log.Debug("Tool complete", "tool", *event.Data.ToolName)
+				listener.AIToolComplete(*event.Data.ToolName)
+			}
+		case copilot.SessionError:
+			errMsg := "session error"
+			if event.Data.Message != nil {
+				errMsg = *event.Data.Message
+			}
+			c.log.Error("Session error event", "msg", errMsg)
+			select {
+			case errCh <- fmt.Errorf("%s", errMsg):
+			default:
+			}
+		case copilot.SessionIdle:
+			c.log.Debug("Session idle — completing")
+			closeOnce.Do(func() { close(done) })
 		}
 	})
 	defer unsubscribe()
 
+	c.log.Debug("Sending prompt", "len", len(prompt))
 	if _, err := session.Send(ctx, copilot.MessageOptions{
 		Prompt: prompt,
 	}); err != nil {
-		responseErr = fmt.Errorf("AI send failed: %w", err)
-		listener.AIResponseFailed(responseErr)
-		return responseErr
+		resErr := fmt.Errorf("AI send failed: %w", err)
+		listener.AIResponseFailed(resErr)
+		return resErr
 	}
 
 	select {
 	case <-done:
-		listener.AIResponseComplete(fullContent)
+		mu.Lock()
+		fc := fullContent
+		mu.Unlock()
+		listener.AIResponseComplete(fc)
+		return nil
+	case err := <-errCh:
+		listener.AIResponseFailed(err)
+		return err
 	case <-ctx.Done():
-		responseErr = ctx.Err()
-		listener.AIResponseFailed(responseErr)
+		listener.AIResponseFailed(ctx.Err())
+		return ctx.Err()
 	}
-
-	return responseErr
 }
 
 // ResetSession destroys the current session so a fresh one is created next time.

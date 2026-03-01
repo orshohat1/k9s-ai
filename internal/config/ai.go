@@ -7,7 +7,7 @@ import "os"
 
 // AI tracks AI/Copilot configuration options.
 type AI struct {
-	Enabled         bool        `json:"enabled" yaml:"enabled"`
+	Enabled         *bool       `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	Model           string      `json:"model" yaml:"model"`
 	Provider        *AIProvider `json:"provider,omitempty" yaml:"provider,omitempty"`
 	Streaming       bool        `json:"streaming" yaml:"streaming"`
@@ -16,6 +16,11 @@ type AI struct {
 	ReasoningEffort string      `json:"reasoningEffort,omitempty" yaml:"reasoningEffort,omitempty"`
 	ActiveSkill     string      `json:"activeSkill,omitempty" yaml:"activeSkill,omitempty"`
 	GitHubToken     string      `json:"githubToken,omitempty" yaml:"githubToken,omitempty"`
+}
+
+// IsEnabled returns true if AI is enabled (defaults to true when not explicitly set).
+func (a AI) IsEnabled() bool {
+	return a.Enabled == nil || *a.Enabled
 }
 
 // AIProvider tracks BYOK (Bring Your Own Key) provider configuration.
@@ -58,7 +63,7 @@ func (a AI) ResolveGitHubToken() string {
 // NewAI creates a new default AI configuration.
 func NewAI() AI {
 	return AI{
-		Enabled:         true,
+		Enabled:         boolPtr(true),
 		Model:           "gpt-4.1",
 		Streaming:       true,
 		MaxContextLines: 500,
@@ -68,6 +73,9 @@ func NewAI() AI {
 
 // Validate checks and corrects AI configuration.
 func (a AI) Validate() AI {
+	if a.Enabled == nil {
+		a.Enabled = boolPtr(true)
+	}
 	if a.Model == "" {
 		a.Model = "gpt-4.1"
 	}
