@@ -275,6 +275,23 @@ func (a *App) contextNames() ([]string, error) {
 }
 
 func (a *App) keyboard(evt *tcell.EventKey) *tcell.EventKey {
+	// When the AI chat input is focused, let printable characters and
+	// chat-specific bindings pass through to the input field instead
+	// of being intercepted by app-level actions (e.g. ? for help).
+	if v := a.Content.GetPrimitive("main"); v != nil {
+		if _, ok := v.(*AIChatView); ok {
+			// Allow all rune keys (printable chars) to reach the input field.
+			if evt.Key() == tcell.KeyRune {
+				return evt
+			}
+			// Let chat-specific Ctrl keys be handled by chat's own bindings.
+			switch evt.Key() {
+			case tcell.KeyCtrlC, tcell.KeyCtrlR, tcell.KeyCtrlS, tcell.KeyCtrlF, tcell.KeyCtrlN:
+				return evt
+			}
+		}
+	}
+
 	if k, ok := a.HasAction(ui.AsKey(evt)); ok && !a.Content.IsTopDialog() {
 		return k.Action(evt)
 	}

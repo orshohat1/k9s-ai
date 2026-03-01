@@ -25,6 +25,8 @@ import (
 const (
 	aiChatTitle    = "AI Chat"
 	aiChatTitleFmt = " AI Chat [hilite:bg:b](%s)[fg:bg:-] "
+	chatSeparator  = "─────────────────────────────────────────────"
+	thinSeparator  = "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
 )
 
 // AIChatView represents the AI chat interface.
@@ -54,10 +56,15 @@ type chatMessage struct {
 }
 
 // Package-level chat history that persists across view recreations.
+// History is scoped by resource context so each workload has its own chat.
 var (
-	globalChatHistory []chatMessage
-	globalChatMu      sync.Mutex
+	globalChatHistories map[string][]chatMessage
+	globalChatMu        sync.Mutex
 )
+
+func init() {
+	globalChatHistories = make(map[string][]chatMessage)
+}
 
 var _ model.Component = (*AIChatView)(nil)
 
@@ -236,8 +243,9 @@ func (v *AIChatView) backCmd(*tcell.EventKey) *tcell.EventKey {
 func (v *AIChatView) clearCmd(*tcell.EventKey) *tcell.EventKey {
 	v.output.Clear()
 	v.history = nil
+	scope := v.chatScope()
 	globalChatMu.Lock()
-	globalChatHistory = nil
+	delete(globalChatHistories, scope)
 	globalChatMu.Unlock()
 	v.printWelcome()
 	return nil
@@ -249,8 +257,9 @@ func (v *AIChatView) resetCmd(*tcell.EventKey) *tcell.EventKey {
 	}
 	v.output.Clear()
 	v.history = nil
+	scope := v.chatScope()
 	globalChatMu.Lock()
-	globalChatHistory = nil
+	delete(globalChatHistories, scope)
 	globalChatMu.Unlock()
 	v.printWelcome()
 	v.app.Flash().Info("AI session reset")
@@ -369,9 +378,12 @@ func (v *AIChatView) sendMessage(text string) {
 		return
 	}
 
+	// Scope the prompt to the workload context if applicable.
+	prompt := v.buildContextualPrompt(text)
+
 	var streamedContent strings.Builder
 	var streamMu sync.Mutex
-	err := ai.Client.Send(context.Background(), text, &chatListener{
+	err := ai.Client.Send(context.Background(), prompt, &chatListener{
 		view:            v,
 		streamedContent: &streamedContent,
 		mu:              &streamMu,
@@ -392,22 +404,80 @@ func (v *AIChatView) sendMessage(text string) {
 		// Don't re-render — already streamed to output. Just persist.
 		msg := chatMessage{role: "assistant", content: finalContent}
 		v.history = append(v.history, msg)
+		scope := v.chatScope()
 		globalChatMu.Lock()
-		globalChatHistory = append(globalChatHistory, msg)
+		globalChatHistories[scope] = append(globalChatHistories[scope], msg)
 		globalChatMu.Unlock()
+
+		// Re-render with proper markdown formatting (streaming was raw text).
+		v.app.QueueUpdateDraw(func() {
+			v.reRenderChat()
+		})
 	}
 }
 
 // --------------------------------------------------------------------------
 // Message rendering
 
+// chatScope returns the history scope key for this chat view.
+func (v *AIChatView) chatScope() string {
+	if v.resKind == "" || v.resName == "" {
+		return "_global_"
+	}
+	if v.resNamespace != "" {
+		return v.resKind + "/" + v.resNamespace + "/" + v.resName
+	}
+	return v.resKind + "/" + v.resName
+}
+
+// buildContextualPrompt wraps the user's question with workload context
+// so the AI focuses on the specific resource, not the whole cluster.
+func (v *AIChatView) buildContextualPrompt(text string) string {
+	if v.resKind == "" || v.resName == "" {
+		return text
+	}
+
+	ns := v.resNamespace
+	if ns == "" {
+		ns = "(cluster-scoped)"
+	}
+
+	return fmt.Sprintf(`[RESOURCE CONTEXT]
+This chat is focused on the %s "%s" in namespace "%s".
+Focus your analysis ONLY on this specific workload and its directly related resources:
+- The %s itself and its pods/replicas
+- Services that select or target it
+- ConfigMaps, Secrets, and ServiceAccounts it references
+- Ingress or NetworkPolicies related to it
+- PersistentVolumeClaims it uses
+- Events related to it and its pods
+
+Do NOT analyze unrelated cluster-wide resources unless the user explicitly asks.
+When using diagnostic tools, scope queries to this resource and its namespace.
+
+[USER QUESTION]
+%s`, v.resKind, v.resName, ns, v.resKind, text)
+}
+
+// reRenderChat clears and re-renders the full chat with proper formatting.
+func (v *AIChatView) reRenderChat() {
+	v.output.Clear()
+	v.printWelcome()
+	v.applyResourceContext()
+	for _, msg := range v.history {
+		v.renderMessage(msg.role, msg.content)
+	}
+	v.output.ScrollToEnd()
+}
+
 func (v *AIChatView) appendMessage(role, content string) {
 	msg := chatMessage{role: role, content: content}
 	v.history = append(v.history, msg)
 
-	// Persist to global store so history survives view recreation.
+	// Persist to scoped global store.
+	scope := v.chatScope()
 	globalChatMu.Lock()
-	globalChatHistory = append(globalChatHistory, msg)
+	globalChatHistories[scope] = append(globalChatHistories[scope], msg)
 	globalChatMu.Unlock()
 
 	v.app.QueueUpdateDraw(func() {
@@ -425,32 +495,36 @@ func (v *AIChatView) renderMessage(role, content string) {
 
 	switch role {
 	case "user":
-		fmt.Fprintf(v.output, "\n  [%s::d]────────────────────────────────[-::-]\n", dimColor)
+		fmt.Fprintf(v.output, "\n  [%s::d]%s[-::-]\n", dimColor, chatSeparator)
 		fmt.Fprintf(v.output, "  [%s::b]▶ You[-::-]\n", hlColor)
-		fmt.Fprintf(v.output, "  %s\n", content)
+		for _, line := range strings.Split(content, "\n") {
+			fmt.Fprintf(v.output, "    %s\n", line)
+		}
 
 	case "assistant":
-		fmt.Fprintf(v.output, "\n  [%s::d]────────────────────────────────[-::-]\n", dimColor)
+		fmt.Fprintf(v.output, "\n  [%s::d]%s[-::-]\n", dimColor, chatSeparator)
 		fmt.Fprintf(v.output, "  [%s::b]✦ Copilot[-::-]\n", s.Frame().Status.AddColor)
 		v.renderFormattedContent(content)
 
 	case "system":
-		fmt.Fprintf(v.output, "\n  [gray::d]%s[-::-]\n", content)
+		fmt.Fprintf(v.output, "\n    [gray::d]%s[-::-]\n", content)
 
 	case "reasoning":
-		fmt.Fprintf(v.output, "  [%s::d]○ Thinking: %s[-::-]\n", dimColor, content)
+		fmt.Fprintf(v.output, "    [%s::d]○ %s[-::-]\n", dimColor, content)
 
 	case "activity":
-		fmt.Fprintf(v.output, "  [%s::d]  ⚡ %s[-::-]\n", dimColor, content)
+		fmt.Fprintf(v.output, "    [%s::d]⚡ %s[-::-]\n", dimColor, content)
 	}
 }
 
 // restoreHistory replays persisted chat messages into the view.
 // Returns true if history was restored.
 func (v *AIChatView) restoreHistory() bool {
+	scope := v.chatScope()
 	globalChatMu.Lock()
-	msgs := make([]chatMessage, len(globalChatHistory))
-	copy(msgs, globalChatHistory)
+	src := globalChatHistories[scope]
+	msgs := make([]chatMessage, len(src))
+	copy(msgs, src)
 	globalChatMu.Unlock()
 
 	if len(msgs) == 0 {
@@ -468,7 +542,7 @@ func (v *AIChatView) restoreHistory() bool {
 
 func (v *AIChatView) appendError(msg string) {
 	v.app.QueueUpdateDraw(func() {
-		fmt.Fprintf(v.output, "\n  [red::b]✖ Error:[-::-] [red::-]%s[-::-]\n", msg)
+		fmt.Fprintf(v.output, "\n    [red::b]✖ Error:[-::-] [red::-]%s[-::-]\n", msg)
 		v.output.ScrollToEnd()
 	})
 }
@@ -492,25 +566,25 @@ func (v *AIChatView) renderFormattedContent(content string) {
 				lang := strings.TrimPrefix(trimmed, "```")
 				lang = strings.TrimSpace(lang)
 				if lang != "" {
-					fmt.Fprintf(v.output, "  [%s::d]--- %s ---[-::-]\n", codeColor, lang)
+					fmt.Fprintf(v.output, "\n    [%s::d]┌─ %s ─────────────────────[-::-]\n", codeColor, lang)
 				} else {
-					fmt.Fprintf(v.output, "  [%s::d]-----------[-::-]\n", codeColor)
+					fmt.Fprintf(v.output, "\n    [%s::d]┌──────────────────────────[-::-]\n", codeColor)
 				}
 			} else {
-				fmt.Fprintf(v.output, "  [%s::d]-----------[-::-]\n", codeColor)
+				fmt.Fprintf(v.output, "    [%s::d]└──────────────────────────[-::-]\n\n", codeColor)
 			}
 			continue
 		}
 
 		if inCodeBlock {
-			fmt.Fprintf(v.output, "  [%s::-]  %s[-::-]\n", highlightColor, line)
+			fmt.Fprintf(v.output, "    [%s::d]│[-::-] [%s::-]%s[-::-]\n", codeColor, highlightColor, line)
 			continue
 		}
 
 		// Headers: ## Foo -> bold.
 		if strings.HasPrefix(trimmed, "#") {
 			text := strings.TrimLeft(trimmed, "# ")
-			fmt.Fprintf(v.output, "\n  [%s::b]%s[-::-]\n", highlightColor, text)
+			fmt.Fprintf(v.output, "\n    [%s::b]%s[-::-]\n", highlightColor, text)
 			continue
 		}
 
@@ -518,20 +592,26 @@ func (v *AIChatView) renderFormattedContent(content string) {
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
 			rest := trimmed[2:]
 			rest = renderInlineFormatting(rest)
-			fmt.Fprintf(v.output, "  [%s::-]>[-::-] %s\n", highlightColor, rest)
+			fmt.Fprintf(v.output, "    [%s::-]•[-::-] %s\n", highlightColor, rest)
 			continue
 		}
 
 		// Numbered lists.
 		if matched, _ := regexp.MatchString(`^\d+\.\s`, trimmed); matched {
 			formatted := renderInlineFormatting(trimmed)
-			fmt.Fprintf(v.output, "  %s\n", formatted)
+			fmt.Fprintf(v.output, "    %s\n", formatted)
+			continue
+		}
+
+		// Empty line.
+		if trimmed == "" {
+			fmt.Fprint(v.output, "\n")
 			continue
 		}
 
 		// Regular text.
-		formatted := renderInlineFormatting(line)
-		fmt.Fprintf(v.output, "  %s\n", formatted)
+		formatted := renderInlineFormatting(trimmed)
+		fmt.Fprintf(v.output, "    %s\n", formatted)
 	}
 }
 
@@ -558,13 +638,15 @@ func (v *AIChatView) printWelcome() {
 	addColor := s.Frame().Status.AddColor
 
 	welcome := fmt.Sprintf(
-		"\n  [%s::b]✦ K9s AI Assistant[-::-]  [%s::d]Powered by GitHub Copilot[-::-]\n\n"+
-			"  [%s::-]Ask me anything about your cluster. I can:[-::-]\n"+
-			"  [%s::-]  ▶[-::-] Diagnose pod crashes, OOM kills, image pull errors\n"+
-			"  [%s::-]  ▶[-::-] Fix deployments by patching, scaling, or restarting\n"+
-			"  [%s::-]  ▶[-::-] Analyze events, logs, RBAC, and cluster health\n\n"+
-			"  [%s::d]PgUp/PgDn to scroll  ·  Ctrl+C clear  ·  Ctrl+R reset session[-::-]\n",
-		addColor, dimColor,
+		"\n  [%s::b]✦ K9s AI Assistant[-::-]\n"+
+			"  [%s::d]Powered by GitHub Copilot[-::-]\n\n"+
+			"  [%s::-]Ask me anything about your cluster:[-::-]\n\n"+
+			"    [%s::-]•[-::-] Diagnose pod crashes, OOM kills, image pull errors\n"+
+			"    [%s::-]•[-::-] Fix deployments by patching, scaling, or restarting\n"+
+			"    [%s::-]•[-::-] Analyze events, logs, RBAC, and cluster health\n\n"+
+			"  [%s::d]PgUp/PgDn scroll  ·  ↑↓ scroll  ·  Ctrl+C clear  ·  Ctrl+R reset[-::-]\n",
+		addColor,
+		dimColor,
 		dimColor,
 		hlColor, hlColor, hlColor,
 		dimColor,
@@ -590,10 +672,11 @@ func (v *AIChatView) applyResourceContext() {
 
 	label := fmt.Sprintf("%s/%s", v.resKind, v.resName)
 	if v.resNamespace != "" {
-		label = fmt.Sprintf("%s/%s (ns: %s)", v.resKind, v.resName, v.resNamespace)
+		label = fmt.Sprintf("%s/%s", v.resName, v.resNamespace)
 	}
 
-	fmt.Fprintf(v.output, "\n  [%s::b]Resource:[-::-] [%s::-]%s[-::-]\n", hlColor, dimColor, label)
+	fmt.Fprintf(v.output, "\n  [%s::d]%s[-::-]\n", dimColor, chatSeparator)
+	fmt.Fprintf(v.output, "  [%s::b]Resource:[-::-]  [%s::-]%s[-::-] [%s::d](%s)[-::-]\n", hlColor, hlColor, label, dimColor, v.resKind)
 	v.input.SetPlaceholder(fmt.Sprintf("Ask about %s/%s...", v.resKind, v.resName))
 }
 
@@ -648,8 +731,8 @@ func (l *chatListener) AIResponseDelta(delta string) {
 			l.view.mu.Unlock()
 			s := l.view.app.Styles
 			dimColor := s.Frame().Menu.FgColor
-			fmt.Fprintf(l.view.output, "\n  [%s::d]────────────────────────────────[-::-]\n", dimColor)
-			fmt.Fprintf(l.view.output, "  [%s::b]✦ Copilot[-::-]\n  ", s.Frame().Status.AddColor)
+			fmt.Fprintf(l.view.output, "\n  [%s::d]%s[-::-]\n", dimColor, chatSeparator)
+			fmt.Fprintf(l.view.output, "  [%s::b]✦ Copilot[-::-]\n    ", s.Frame().Status.AddColor)
 		} else {
 			l.view.mu.Unlock()
 		}
@@ -689,7 +772,7 @@ func (l *chatListener) AIReasoningComplete(content string) {
 	l.view.app.QueueUpdateDraw(func() {
 		s := l.view.app.Styles
 		dimColor := s.Frame().Menu.FgColor
-		fmt.Fprintf(l.view.output, "  [%s::d]○ Thinking: %s[-::-]\n", dimColor, content)
+		fmt.Fprintf(l.view.output, "    [%s::d]○ %s[-::-]\n", dimColor, content)
 		l.view.output.ScrollToEnd()
 	})
 }
@@ -700,14 +783,15 @@ func (l *chatListener) AIToolStart(toolName string) {
 		s := l.view.app.Styles
 		dimColor := s.Frame().Menu.FgColor
 		label := toolDisplayName(toolName)
-		fmt.Fprintf(l.view.output, "  [%s::d]  ⚡ %s[-::-]\n", dimColor, label)
+		fmt.Fprintf(l.view.output, "    [%s::d]⚡ %s[-::-]\n", dimColor, label)
 		l.view.output.ScrollToEnd()
 
 		// Also persist to history.
 		msg := chatMessage{role: "activity", content: label, activity: true}
 		l.view.history = append(l.view.history, msg)
+		scope := l.view.chatScope()
 		globalChatMu.Lock()
-		globalChatHistory = append(globalChatHistory, msg)
+		globalChatHistories[scope] = append(globalChatHistories[scope], msg)
 		globalChatMu.Unlock()
 	})
 }
@@ -745,6 +829,8 @@ func toolDisplayName(name string) string {
 		return "Restarting resource..."
 	case "delete_resource":
 		return "Deleting resource..."
+	case "report_intent":
+		return "Planning action..."
 	default:
 		return fmt.Sprintf("Running %s...", name)
 	}
