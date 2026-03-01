@@ -341,16 +341,13 @@ func (v *AIChatView) sendMessage(text string) {
 		return
 	}
 
+	// AIResponseComplete already wrote to response; display it.
 	respMu.Lock()
 	resp := response.String()
 	respMu.Unlock()
 
 	if resp != "" {
-		v.app.QueueUpdateDraw(func() {
-			v.appendMessage("assistant", resp)
-		})
-	} else {
-		slog.Warn("AI response was empty after Send() completed")
+		v.appendMessage("assistant", resp)
 	}
 }
 
@@ -372,7 +369,7 @@ func (v *AIChatView) appendMessage(role, content string) {
 			v.renderFormattedContent(content)
 
 		case "system":
-			fmt.Fprintf(v.output, "\n  [gray::i]%s[-::-]\n", content)
+			fmt.Fprintf(v.output, "\n  [gray::-]%s[-::-]\n", content)
 
 		case "reasoning":
 			fmt.Fprintf(v.output, "\n  [%s::di]Thinking: %s[-::-]\n", s.Frame().Menu.FgColor, content)

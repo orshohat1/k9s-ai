@@ -303,7 +303,9 @@ func (tf *ToolFactory) getEventsTool() copilot.Tool {
 
 // --- get_cluster_health tool ---
 
-type getClusterHealthParams struct{}
+type getClusterHealthParams struct {
+	IncludeNodeDetails bool `json:"includeNodeDetails,omitempty" jsonschema:"If true, include per-node condition details (default false)"`
+}
 
 func (tf *ToolFactory) getClusterHealthTool() copilot.Tool {
 	return copilot.DefineTool(

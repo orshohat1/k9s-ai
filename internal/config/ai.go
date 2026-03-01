@@ -82,6 +82,10 @@ func (a AI) Validate() AI {
 	if a.MaxContextLines <= 0 {
 		a.MaxContextLines = 500
 	}
+	// Default streaming to true if config was not explicitly set.
+	if !a.Streaming {
+		a.Streaming = true
+	}
 	switch a.ReasoningEffort {
 	case "", "low", "medium", "high", "xhigh":
 	default:

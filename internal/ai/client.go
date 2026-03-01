@@ -342,7 +342,7 @@ func (c *AIClient) Send(ctx context.Context, prompt string, listener Listener) e
 		}
 	}
 
-	// Apply a timeout so we never hang indefinitely.
+	// Apply a generous timeout so we never hang indefinitely.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
@@ -353,25 +353,15 @@ func (c *AIClient) Send(ctx context.Context, prompt string, listener Listener) e
 
 	listener.AIResponseStart()
 
-	done := make(chan struct{})
-	errCh := make(chan error, 1)
-	var closeOnce sync.Once
-	var fullContent string
-	var mu sync.Mutex
-
+	// Subscribe to events for live activity display (tools, reasoning, deltas).
+	// The response itself is captured reliably via SendAndWait below.
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
 		c.log.Debug("Session event", "type", string(event.Type))
 
 		switch event.Type {
-		case copilot.AssistantMessageDelta:
+		case copilot.AssistantMessageDelta, copilot.AssistantStreamingDelta:
 			if event.Data.DeltaContent != nil {
 				listener.AIResponseDelta(*event.Data.DeltaContent)
-			}
-		case copilot.AssistantMessage:
-			if event.Data.Content != nil {
-				mu.Lock()
-				fullContent = *event.Data.Content
-				mu.Unlock()
 			}
 		case copilot.AssistantReasoningDelta:
 			if event.Data.DeltaContent != nil {
@@ -392,45 +382,31 @@ func (c *AIClient) Send(ctx context.Context, prompt string, listener Listener) e
 				listener.AIToolComplete(*event.Data.ToolName)
 			}
 		case copilot.SessionError:
-			errMsg := "session error"
 			if event.Data.Message != nil {
-				errMsg = *event.Data.Message
+				c.log.Error("Session error event", "msg", *event.Data.Message)
 			}
-			c.log.Error("Session error event", "msg", errMsg)
-			select {
-			case errCh <- fmt.Errorf("%s", errMsg):
-			default:
-			}
-		case copilot.SessionIdle:
-			c.log.Debug("Session idle — completing")
-			closeOnce.Do(func() { close(done) })
 		}
 	})
 	defer unsubscribe()
 
-	c.log.Debug("Sending prompt", "len", len(prompt))
-	if _, err := session.Send(ctx, copilot.MessageOptions{
+	c.log.Debug("Sending prompt via SendAndWait", "len", len(prompt))
+	response, err := session.SendAndWait(ctx, copilot.MessageOptions{
 		Prompt: prompt,
-	}); err != nil {
-		resErr := fmt.Errorf("AI send failed: %w", err)
-		listener.AIResponseFailed(resErr)
-		return resErr
+	})
+	if err != nil {
+		c.log.Error("SendAndWait failed", "error", err)
+		listener.AIResponseFailed(fmt.Errorf("AI request failed: %w", err))
+		return err
 	}
 
-	select {
-	case <-done:
-		mu.Lock()
-		fc := fullContent
-		mu.Unlock()
-		listener.AIResponseComplete(fc)
-		return nil
-	case err := <-errCh:
-		listener.AIResponseFailed(err)
-		return err
-	case <-ctx.Done():
-		listener.AIResponseFailed(ctx.Err())
-		return ctx.Err()
+	content := ""
+	if response != nil && response.Data.Content != nil {
+		content = *response.Data.Content
 	}
+	c.log.Debug("SendAndWait completed", "hasContent", content != "", "contentLen", len(content))
+	listener.AIResponseComplete(content)
+
+	return nil
 }
 
 // ResetSession destroys the current session so a fresh one is created next time.
