@@ -83,7 +83,6 @@ brews:
     repository:
       owner: orshohat1
       name: k9s-ai
-      branch: homebrew
     directory: Formula
     homepage: https://github.com/orshohat1/k9s-ai
     description: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
@@ -99,7 +98,6 @@ scoops:
     repository:
       owner: orshohat1
       name: k9s-ai
-      branch: scoop
     homepage: https://github.com/orshohat1/k9s-ai
     description: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
     license: Apache-2.0
