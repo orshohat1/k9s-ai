@@ -1,0 +1,8 @@
+# Dockerfile for GoReleaser — uses pre-built binary.
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates curl
+
+COPY k9s-ai /bin/k9s-ai
+
+ENTRYPOINT [ "/bin/k9s-ai" ]

@@ -147,14 +147,14 @@ dockers:
   - image_templates:
       - "orshohat1/k9s-ai:{{ .Version }}-amd64"
     use: buildx
-    dockerfile: k9s-ai/Dockerfile
+    dockerfile: k9s-ai/Dockerfile.goreleaser
     build_flag_templates:
       - "--platform=linux/amd64"
     goarch: amd64
   - image_templates:
       - "orshohat1/k9s-ai:{{ .Version }}-arm64"
     use: buildx
-    dockerfile: k9s-ai/Dockerfile
+    dockerfile: k9s-ai/Dockerfile.goreleaser
     build_flag_templates:
       - "--platform=linux/arm64"
     goarch: arm64
