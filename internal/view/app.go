@@ -133,10 +133,13 @@ func (a *App) Init(version string, _ int) error {
 		a.initImgScanner(version)
 	}
 	if a.Config.K9s.AI.IsEnabled() {
-		a.Menu().SetPersistentHints(model.MenuHints{
+		hints := model.MenuHints{
 			{Mnemonic: ":ai", Description: "AI Chat", Visible: true},
-			{Mnemonic: ":ai models", Description: "AI Models", Visible: true},
-		})
+		}
+		if !a.Config.K9s.AI.IsBYOK() {
+			hints = append(hints, model.MenuHint{Mnemonic: ":ai models", Description: "AI Models", Visible: true})
+		}
+		a.Menu().SetPersistentHints(hints)
 		a.initAI()
 	}
 	a.ReloadStyles()
@@ -275,14 +278,17 @@ func (a *App) contextNames() ([]string, error) {
 }
 
 func (a *App) keyboard(evt *tcell.EventKey) *tcell.EventKey {
-	// When the AI chat input is focused, let printable characters and
-	// chat-specific bindings pass through to the input field instead
-	// of being intercepted by app-level actions (e.g. ? for help).
+	// When the AI chat view is on top, suppress only the app-level rune
+	// shortcuts that conflict with typing (?, [, ], -) so they reach the
+	// input field instead of triggering help / navigation.  Other rune keys
+	// (including ':' for command mode) are left alone.
 	if top := a.Content.Top(); top != nil {
 		if _, ok := top.(*AIChatView); ok {
-			// Allow all rune keys (printable chars) to reach the input field.
 			if evt.Key() == tcell.KeyRune {
-				return evt
+				switch evt.Rune() {
+				case '?', '[', ']', '-':
+					return evt // swallow: bypass app actions, goes to input
+				}
 			}
 			// Let chat-specific Ctrl keys be handled by chat's own bindings.
 			switch evt.Key() {

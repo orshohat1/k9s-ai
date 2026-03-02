@@ -307,9 +307,13 @@ func (c *Command) specialCmd(p *cmd.Interpreter, pushCmd bool) bool {
 			c.app.Flash().Err(err)
 		}
 	case p.IsAIModelsCmd():
-		modelsView := NewAIModelsView()
-		if err := c.app.inject(modelsView, false); err != nil {
-			c.app.Flash().Err(err)
+		if c.app.Config.K9s.AI.IsBYOK() {
+			c.app.Flash().Errf("Model listing is not available with BYOK providers. Set your model in the config file (ai.model).")
+		} else {
+			modelsView := NewAIModelsView()
+			if err := c.app.inject(modelsView, false); err != nil {
+				c.app.Flash().Err(err)
+			}
 		}
 	case p.IsAISkillCmd():
 		if name, ok := p.AISkillArg(); !ok {

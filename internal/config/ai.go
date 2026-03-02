@@ -54,6 +54,11 @@ func (p *AIProvider) ResolveBearerToken() string {
 	return os.Getenv("K9S_AI_BEARER_TOKEN")
 }
 
+// IsBYOK returns true when a BYOK (Bring Your Own Key) provider is configured.
+func (a AI) IsBYOK() bool {
+	return a.Provider != nil && a.Provider.BaseURL != ""
+}
+
 // ResolveGitHubToken returns the GitHub token from config.
 // When empty the Copilot SDK falls back to gh CLI auth automatically.
 func (a AI) ResolveGitHubToken() string {
