@@ -150,6 +150,8 @@ dockers:
     dockerfile: k9s-ai/Dockerfile.goreleaser
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--cache-from=type=gha,scope=docker-amd64"
+      - "--cache-to=type=gha,mode=max,scope=docker-amd64"
     goarch: amd64
   - image_templates:
       - "orshohat1/k9s-ai:{{ .Version }}-arm64"
@@ -157,6 +159,8 @@ dockers:
     dockerfile: k9s-ai/Dockerfile.goreleaser
     build_flag_templates:
       - "--platform=linux/arm64"
+      - "--cache-from=type=gha,scope=docker-arm64"
+      - "--cache-to=type=gha,mode=max,scope=docker-arm64"
     goarch: arm64
 
 docker_manifests:
