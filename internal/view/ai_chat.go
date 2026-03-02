@@ -819,7 +819,7 @@ func (v *AIChatView) printWelcome() {
 				"    [%s::b]2[-::-]  Explain this %s — describe config and relationships\n"+
 				"    [%s::b]3[-::-]  Show related resources — services, configmaps, ingress\n"+
 				"    [%s::b]4[-::-]  Check events — recent warnings and errors\n\n"+
-				"  [%s::d]PgUp/PgDn scroll  ·  ↑↓ scroll  ·  Ctrl+C clear  ·  Ctrl+R reset  ·  Ctrl+N models[-::-]\n",
+				"  [%s::d]PgUp/PgDn scroll  ·  ↑↓ scroll  ·  Ctrl+R reset  [-::-]\n",
 			addColor, dimColor, label,
 			dimColor, label, dimColor, v.resKind,
 			dimColor,
@@ -839,7 +839,7 @@ func (v *AIChatView) printWelcome() {
 				"    [%s::-]•[-::-] Diagnose pod crashes, OOM kills, image pull errors\n"+
 				"    [%s::-]•[-::-] Fix deployments by patching, scaling, or restarting\n"+
 				"    [%s::-]•[-::-] Analyze events, logs, RBAC, and cluster health\n\n"+
-				"  [%s::d]PgUp/PgDn scroll  ·  ↑↓ scroll  ·  Ctrl+C clear  ·  Ctrl+R reset  ·  Ctrl+N models[-::-]\n",
+				"  [%s::d]PgUp/PgDn scroll  ·  ↑↓ scroll  ·  Ctrl+R reset [-::-]\n",
 			addColor,
 			dimColor,
 			dimColor,
