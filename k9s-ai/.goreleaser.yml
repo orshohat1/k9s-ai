@@ -6,7 +6,7 @@ before:
   hooks:
     - go mod download
     - go generate ./...
-    - go tool bundler
+    - sh -c "go tool bundler || true"
 
 release:
   prerelease: false
@@ -22,6 +22,21 @@ builds:
       - amd64
       - arm64
       - arm
+      - ppc64le
+      - s390x
+    goarm:
+      - 7
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X {{.ModulePath}}/cmd.version={{.Version}} -X {{.ModulePath}}/cmd.commit={{.ShortCommit}} -X {{.ModulePath}}/cmd.date={{.Date}}
+
+  - id: freebsd
+    goos:
+      - freebsd
+    goarch:
+      - amd64
+      - arm64
     goarm:
       - 7
     flags:
@@ -52,55 +67,49 @@ builds:
       - -s -w -X {{.ModulePath}}/cmd.version={{.Version}} -X {{.ModulePath}}/cmd.commit={{.ShortCommit}} -X {{.ModulePath}}/cmd.date={{.Date}}
 
 archives:
-  - id: linux
-    builds:
-      - linux
-    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
-    format: tar.gz
-  - id: osx
-    builds:
-      - osx
-    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
-    format: tar.gz
-  - id: windows
-    builds:
-      - windows
-    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
-    format: zip
+  - name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}amd64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: ["zip"]
 
 brews:
   - name: k9s-ai
-    ids:
-      - linux
-      - osx
     repository:
-      owner: or-shohat
-      name: homebrew-k9s-ai
+      owner: orshohat1
+      name: k9s-ai
+      branch: homebrew
     directory: Formula
-    homepage: https://github.com/or-shohat/k9s-ai
+    homepage: https://github.com/orshohat1/k9s-ai
     description: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
     license: Apache-2.0
     install: |
       bin.install "k9s-ai"
+      generate_completions_from_executable(bin/"k9s-ai", "completion")
+    test: |
+      system "#{bin}/k9s-ai", "version"
 
 scoops:
   - name: k9s-ai
-    ids:
-      - windows
     repository:
-      owner: or-shohat
-      name: scoop-k9s-ai
-    homepage: https://github.com/or-shohat/k9s-ai
+      owner: orshohat1
+      name: k9s-ai
+      branch: scoop
+    homepage: https://github.com/orshohat1/k9s-ai
     description: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
     license: Apache-2.0
 
 nfpms:
   - id: k9s-ai
+    file_name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     package_name: k9s-ai
-    builds:
-      - linux
-    vendor: or-shohat
-    homepage: https://github.com/or-shohat/k9s-ai
+    vendor: orshohat1
+    homepage: https://github.com/orshohat1/k9s-ai
     maintainer: Or Shohat
     description: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
     license: Apache-2.0
@@ -108,12 +117,17 @@ nfpms:
       - deb
       - rpm
       - apk
+    bindir: /usr/bin
+    section: utils
+    contents:
+      - src: ./LICENSE
+        dst: /usr/share/doc/k9s-ai/copyright
+        file_info:
+          mode: 0644
 
 snapcrafts:
   - id: k9s-ai
     name: k9s-ai
-    builds:
-      - linux
     summary: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
     description: |
       K9s AI provides a terminal UI to interact with your Kubernetes clusters
@@ -137,16 +151,12 @@ dockers:
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
-    ids:
-      - linux
     goarch: amd64
   - image_templates:
       - "orshohat/k9s-ai:{{ .Version }}-arm64"
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
-    ids:
-      - linux
     goarch: arm64
 
 docker_manifests:
@@ -160,7 +170,10 @@ docker_manifests:
       - "orshohat/k9s-ai:{{ .Version }}-arm64"
 
 checksum:
-  name_template: "checksums.txt"
+  name_template: "checksums.sha256"
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
 
 changelog:
   sort: asc
@@ -169,3 +182,6 @@ changelog:
       - "^docs:"
       - "^test:"
       - "^chore:"
+
+sboms:
+  - artifacts: archive
