@@ -1,0 +1,22 @@
+{
+    "version": "0.1.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/orshohat1/k9s-ai/releases/download/v0.1.0/k9s-ai_Windows_amd64.zip",
+            "bin": [
+                "k9s-ai.exe"
+            ],
+            "hash": "345d7f1998ab0677f533b27daafb07220348ca58cd577e90aa98e41e672c0870"
+        },
+        "arm64": {
+            "url": "https://github.com/orshohat1/k9s-ai/releases/download/v0.1.0/k9s-ai_Windows_arm64.zip",
+            "bin": [
+                "k9s-ai.exe"
+            ],
+            "hash": "9512d9b351e9e56ab5d0b4a252f7ebc4f520289aa509dc88efa68c5a7b422160"
+        }
+    },
+    "homepage": "https://github.com/orshohat1/k9s-ai",
+    "license": "Apache-2.0",
+    "description": "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
+}
