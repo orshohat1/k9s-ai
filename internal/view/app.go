@@ -278,8 +278,8 @@ func (a *App) keyboard(evt *tcell.EventKey) *tcell.EventKey {
 	// When the AI chat input is focused, let printable characters and
 	// chat-specific bindings pass through to the input field instead
 	// of being intercepted by app-level actions (e.g. ? for help).
-	if v := a.Content.GetPrimitive("main"); v != nil {
-		if _, ok := v.(*AIChatView); ok {
+	if top := a.Content.Top(); top != nil {
+		if _, ok := top.(*AIChatView); ok {
 			// Allow all rune keys (printable chars) to reach the input field.
 			if evt.Key() == tcell.KeyRune {
 				return evt

@@ -10,7 +10,7 @@ Built on top of [K9s](https://github.com/derailed/k9s), it adds:
 - **Skills** — Focused tool groups for diagnostics, security, and optimization
 - **Model Selection** — Switch between available Copilot models on the fly
 - **BYOK** — Bring your own OpenAI, Azure, or self-hosted API keys
-- **GitHub Auth** — Automatic authentication via `gh` CLI or config file
+- **GitHub Auth** — Automatic authentication via Copilot device flow (no `gh` CLI required)
 
 ---
 
@@ -21,27 +21,28 @@ K9s AI is available on **macOS**, **Linux**, and **Windows**.
 ### Homebrew (macOS / Linux)
 
 ```shell
-brew install or-shohat/k9s-ai/k9s-ai
+brew tap orshohat1/k9s-ai
+brew install k9s-ai
 ```
 
 ### Scoop (Windows)
 
 ```powershell
-scoop bucket add k9s-ai https://github.com/or-shohat/scoop-k9s-ai
+scoop bucket add k9s-ai https://github.com/orshohat1/k9s-ai
 scoop install k9s-ai
 ```
 
 ### APT (Debian / Ubuntu)
 
 ```shell
-curl -LO https://github.com/or-shohat/k9s-ai/releases/latest/download/k9s-ai_linux_amd64.deb
+curl -LO https://github.com/orshohat1/k9s-ai/releases/latest/download/k9s-ai_linux_amd64.deb
 sudo dpkg -i k9s-ai_linux_amd64.deb
 ```
 
 ### YUM / DNF (Fedora / RHEL)
 
 ```shell
-sudo rpm -i https://github.com/or-shohat/k9s-ai/releases/latest/download/k9s-ai_linux_amd64.rpm
+sudo rpm -i https://github.com/orshohat1/k9s-ai/releases/latest/download/k9s-ai_linux_amd64.rpm
 ```
 
 ### Snap (Linux)
@@ -59,21 +60,25 @@ docker run --rm -it -v ~/.kube:/root/.kube orshohat/k9s-ai:latest
 ### Go Install
 
 ```shell
-go install github.com/or-shohat/k9s-ai@latest
+go install github.com/orshohat1/k9s-ai@latest
 ```
 
 ### Binary Downloads
 
-Download archives for all platforms from [GitHub Releases](https://github.com/or-shohat/k9s-ai/releases):
+Download archives for all platforms from [GitHub Releases](https://github.com/orshohat1/k9s-ai/releases):
 
 | Platform | Archive |
 |----------|---------|
-| macOS (Apple Silicon) | `k9s-ai_darwin_arm64.tar.gz` |
-| macOS (Intel) | `k9s-ai_darwin_amd64.tar.gz` |
-| Linux (x86_64) | `k9s-ai_linux_amd64.tar.gz` |
-| Linux (ARM64) | `k9s-ai_linux_arm64.tar.gz` |
-| Windows (x86_64) | `k9s-ai_windows_amd64.zip` |
-| Windows (ARM64) | `k9s-ai_windows_arm64.zip` |
+| macOS (Apple Silicon) | `k9s-ai_Darwin_arm64.tar.gz` |
+| macOS (Intel) | `k9s-ai_Darwin_amd64.tar.gz` |
+| Linux (x86_64) | `k9s-ai_Linux_amd64.tar.gz` |
+| Linux (ARM64) | `k9s-ai_Linux_arm64.tar.gz` |
+| Linux (ppc64le) | `k9s-ai_Linux_ppc64le.tar.gz` |
+| Linux (s390x) | `k9s-ai_Linux_s390x.tar.gz` |
+| FreeBSD (x86_64) | `k9s-ai_Freebsd_amd64.tar.gz` |
+| FreeBSD (ARM64) | `k9s-ai_Freebsd_arm64.tar.gz` |
+| Windows (x86_64) | `k9s-ai_Windows_amd64.zip` |
+| Windows (ARM64) | `k9s-ai_Windows_arm64.zip` |
 
 ---
 
@@ -86,21 +91,17 @@ After installing, you need to connect k9s-ai to an AI provider. There are two op
 If you have a [GitHub Copilot](https://github.com/features/copilot) subscription:
 
 ```shell
-# 1. Install the GitHub CLI (if you don't have it)
-brew install gh
-
-# 2. Log in to your GitHub account
-gh auth login
-
-# 3. Run k9s-ai — it automatically uses your gh session
+# Just run k9s-ai — it handles authentication automatically
 k9s-ai
 ```
+
+On first launch, the Copilot SDK opens a browser for GitHub device-flow login. No `gh` CLI or extra tools needed — everything is built in.
 
 Type `:ai` and start chatting. That's it.
 
 ### Option B: Bring Your Own API Key
 
-No Copilot subscription? Use any OpenAI-compatible provider (OpenAI, Anthropic, Azure, Ollama, etc.):
+No Copilot subscription? Use any compatible provider (OpenAI, Anthropic, Azure, Ollama, etc.):
 
 ```shell
 # 1. Create the k9s config directory
@@ -132,10 +133,10 @@ K9s AI supports two authentication paths:
 
 | Path | What you need | How it works |
 |------|---------------|--------------|
-| **GitHub Copilot** | A [Copilot subscription](https://github.com/features/copilot) + `gh` CLI | Run `gh auth login` once — k9s-ai picks up your session automatically |
+| **GitHub Copilot** | A [Copilot subscription](https://github.com/features/copilot) | Run k9s-ai — on first launch it opens a browser for GitHub device-flow login. Token is cached automatically. |
 | **BYOK** | An API key from any OpenAI-compatible provider | Set `provider.apiKey` in `~/.config/k9s/config.yaml` (or `K9S_AI_API_KEY` env var) |
 
-For Copilot, you can also set a GitHub token explicitly instead of using the `gh` CLI:
+For Copilot, you can also set a GitHub token explicitly instead of using the device flow:
 
 ```yaml
 # ~/.config/k9s/config.yaml
@@ -148,7 +149,7 @@ k9s:
 
 ## Bring Your Own Key (BYOK)
 
-Don't have GitHub Copilot? Use your own API keys with any OpenAI-compatible provider.
+Don't have GitHub Copilot? Use your own API keys with any compatible provider.
 
 ### OpenAI
 
@@ -215,75 +216,6 @@ k9s:
 
 ---
 
-## Skills
-
-Skills are focused tool + prompt bundles that optimize the AI for specific tasks. When a skill is active, the AI only has access to relevant tools and receives a specialized system prompt — making responses more focused and accurate.
-
-| Skill | Command | Focus |
-|-------|---------|-------|
-| **diagnostics** | `:ai skill diagnostics` | Root-cause analysis: CrashLoopBackOff, OOMKilled, ImagePullBackOff, scheduling |
-| **security** | `:ai skill security` | RBAC auditing, privilege escalation, overly permissive bindings, network policies |
-| **optimization** | `:ai skill optimization` | Resource right-sizing, HPA recommendations, cost optimization, node utilization |
-
-To set a default skill:
-
-```yaml
-k9s:
-  ai:
-    activeSkill: diagnostics
-```
-
-Use `:ai` with no skill argument to clear the active skill and restore all tools.
-
----
-
-## AI Commands
-
-| Command | Description |
-|---------|-------------|
-| `:ai` / `:chat` / `:copilot` | Open the AI chat |
-| `:ai models` | Browse and switch AI models |
-| `:ai skill diagnostics` | Activate diagnostics skill |
-| `:ai skill security` | Activate security skill |
-| `:ai skill optimization` | Activate optimization skill |
-
-### AI Chat Keybindings
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Send message |
-| `Ctrl-C` | Clear chat history |
-| `Ctrl-R` | Reset AI session |
-| `Ctrl-S` | Save chat to file |
-| `Ctrl-F` | Toggle fullscreen |
-| `Ctrl-N` | Open model picker |
-| `Esc` | Back to previous view |
-
----
-
-## AI Tools
-
-The AI assistant has access to these Kubernetes-aware tools that it calls autonomously:
-
-| Tool | Description |
-|------|-------------|
-| `get_resource` | Fetch a specific resource by GVR, name, and namespace (returns YAML) |
-| `list_resources` | List resources of a given type with optional label selectors |
-| `describe_resource` | Full kubectl-style describe including events and conditions |
-| `get_logs` | Container logs with tail lines, previous containers for crash analysis |
-| `get_events` | Cluster events filtered by namespace, resource, or type (Normal/Warning) |
-| `get_cluster_health` | Node count, pod status summary, server version |
-| `get_pod_diagnostics` | Container states, restarts, exit codes, probes, resource limits |
-| `check_rbac` | Verify if a user/service account can perform a specific action |
-
-The AI chains these tools automatically. For example, when you ask *"Why is my pod crashing?"*, it will:
-1. Run `get_pod_diagnostics` to check container states and exit codes
-2. Run `get_events` looking for Warning events
-3. Run `get_logs` with `previous=true` to get crash logs
-4. Synthesize a root-cause analysis with suggested fixes
-
----
-
 ## Full Configuration Reference
 
 ```yaml
@@ -311,7 +243,7 @@ k9s:
     # Active skill: diagnostics, security, optimization, or "" for all tools
     activeSkill: ""
 
-    # GitHub token for Copilot auth (leave empty to use gh CLI)
+    # GitHub token for Copilot auth (leave empty for automatic device flow)
     # githubToken: ghp_xxx
 
     # BYOK provider (optional — omit to use GitHub Copilot)
@@ -324,44 +256,6 @@ k9s:
       azure:                 # Azure-specific options
         apiVersion: ""
 ```
-
-### Disabling AI
-
-```yaml
-k9s:
-  ai:
-    enabled: false
-```
-
----
-
-## All Keyboard Shortcuts
-
-K9s AI inherits all standard K9s keybindings. Here are the most common ones:
-
-| Action | Command | Notes |
-|--------|---------|-------|
-| Show help | `?` | |
-| Show all resource aliases | `ctrl-a` | |
-| Quit | `:q` / `ctrl-c` | |
-| Go back | `esc` | |
-| View a resource | `:`pod⏎ | Accepts singular, plural, short-name |
-| View in namespace | `:`pod ns-x⏎ | |
-| Filter resources | `/`filter⏎ | Regex supported |
-| Fuzzy find | `/`-f filter⏎ | |
-| Switch context | `:`ctx⏎ | |
-| Switch namespace | `:`ns⏎ | |
-| Delete resource | `ctrl-d` | TAB+ENTER to confirm |
-| View YAML | `y` | |
-| View logs | `l` | |
-| Shell into container | `s` | Pods only |
-| Describe resource | `d` | |
-| Edit resource | `e` | |
-| Port forward | `shift-f` | |
-| **Open AI Chat** | **`:ai`** | |
-| **AI Models** | **`:ai models`** | |
-| **AI Skill** | **`:ai skill <name>`** | |
-
 ---
 
 ## Building From Source
@@ -369,7 +263,7 @@ K9s AI inherits all standard K9s keybindings. Here are the most common ones:
 K9s AI requires Go 1.25+.
 
 ```shell
-git clone https://github.com/or-shohat/k9s-ai.git
+git clone https://github.com/orshohat1/k9s-ai.git
 cd k9s-ai
 make build
 ./execs/k9s-ai
@@ -390,24 +284,6 @@ docker run --rm -it -v ~/.kube/config:/root/.kube/config k9s-ai:local
 
 ---
 
-## PreFlight Checks
-
-* K9s AI uses 256 colors terminal mode. On \*Nix systems make sure TERM is set:
-
-    ```shell
-    export TERM=xterm-256color
-    ```
-
-* Set your editor for resource editing:
-
-    ```shell
-    export KUBE_EDITOR=vim
-    ```
-
-* Works best with Kubernetes 1.28+
-
----
-
 ## Credits
 
 K9s AI is built on top of [K9s](https://github.com/derailed/k9s) by [Fernand Galiana](https://github.com/derailed) and the [GitHub Copilot SDK](https://github.com/github/copilot-sdk).
@@ -420,8 +296,3 @@ K9s AI is built on top of [K9s](https://github.com/derailed/k9s) by [Fernand Gal
 * Ensure all exported items are properly commented
 * If applicable, submit a test suite against your PR
 
----
-
-## License
-
-[Apache v2.0](http://www.apache.org/licenses/LICENSE-2.0)
