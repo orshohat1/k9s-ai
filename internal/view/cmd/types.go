@@ -80,4 +80,8 @@ var (
 		"chat",
 		"copilot",
 	)
+
+	byokCmd = sets.New(
+		"byok",
+	)
 )

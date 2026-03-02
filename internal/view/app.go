@@ -135,6 +135,7 @@ func (a *App) Init(version string, _ int) error {
 	if a.Config.K9s.AI.IsEnabled() {
 		hints := model.MenuHints{
 			{Mnemonic: ":ai", Description: "AI Chat", Visible: true},
+			{Mnemonic: ":byok", Description: "BYOK Setup", Visible: true},
 		}
 		if !a.Config.K9s.AI.IsBYOK() {
 			hints = append(hints, model.MenuHint{Mnemonic: ":ai models", Description: "AI Models", Visible: true})
@@ -246,6 +247,11 @@ func (a *App) suggestCommand() model.SuggestionFunc {
 				entries = append(entries, suggest)
 			}
 		}
+		for _, bc := range cmd.BuiltinCmds {
+			if suggest, ok := cmd.ShouldAddSuggest(ls, bc); ok {
+				entries = append(entries, suggest)
+			}
+		}
 
 		namespaceNames, err := a.factory.Client().ValidNamespaceNames()
 		if err != nil {
@@ -278,23 +284,27 @@ func (a *App) contextNames() ([]string, error) {
 }
 
 func (a *App) keyboard(evt *tcell.EventKey) *tcell.EventKey {
-	// When the AI chat view is on top, suppress only the app-level rune
-	// shortcuts that conflict with typing (?, [, ], -) so they reach the
-	// input field instead of triggering help / navigation.  Other rune keys
-	// (including ':' for command mode) are left alone.
+	// When views with interactive input are on top, suppress app-level
+	// shortcuts that conflict with typing.
 	if top := a.Content.Top(); top != nil {
-		if _, ok := top.(*AIChatView); ok {
+		switch top.(type) {
+		case *AIChatView:
 			if evt.Key() == tcell.KeyRune {
 				switch evt.Rune() {
 				case '?', '[', ']', '-':
-					return evt // swallow: bypass app actions, goes to input
+					return evt // bypass app actions, goes to input
 				}
 			}
-			// Let chat-specific Ctrl keys be handled by chat's own bindings.
 			switch evt.Key() {
 			case tcell.KeyCtrlC, tcell.KeyCtrlR, tcell.KeyCtrlS, tcell.KeyCtrlF, tcell.KeyCtrlN:
 				return evt
 			}
+		case *BYOKView:
+			if evt.Key() == tcell.KeyEscape {
+				a.Content.Pop()
+				return nil
+			}
+			return evt
 		}
 	}
 

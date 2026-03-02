@@ -205,6 +205,11 @@ func (c *Interpreter) IsDirCmd() bool {
 	return dirCmd.Has(c.cmd)
 }
 
+// IsBYOKCmd returns true if `:byok` cmd is detected.
+func (c *Interpreter) IsBYOKCmd() bool {
+	return byokCmd.Has(c.cmd)
+}
+
 // IsAICmd returns true if AI chat cmd is detected.
 func (c *Interpreter) IsAICmd() bool {
 	return aiCmd.Has(c.cmd)

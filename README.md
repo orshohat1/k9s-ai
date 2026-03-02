@@ -54,13 +54,7 @@ sudo snap install k9s-ai
 ### Docker
 
 ```shell
-docker run --rm -it -v ~/.kube:/root/.kube orshohat/k9s-ai:latest
-```
-
-### Go Install
-
-```shell
-go install github.com/orshohat1/k9s-ai@latest
+docker run --rm -it -v ~/.kube:/root/.kube orshohat1/k9s-ai:latest
 ```
 
 ### Binary Downloads
@@ -101,7 +95,11 @@ Type `:ai` and start chatting. That's it.
 
 ### Option B: Bring Your Own API Key
 
-No Copilot subscription? Use any compatible provider (OpenAI, Anthropic, Azure, Ollama, etc.):
+No Copilot subscription? Use any compatible provider (OpenAI, Anthropic, Azure, Ollama, etc.).
+
+**Interactive setup (recommended):** Run k9s-ai and type `:byok` to configure your provider, API key, and model through an interactive form. Navigate fields with `Tab`, open dropdowns with `Enter`, and press `Esc` to go back. Settings are saved to your config file automatically.
+
+**Manual setup:** Edit your config file directly:
 
 ```shell
 # 1. Create the k9s config directory
@@ -151,6 +149,17 @@ k9s:
 
 Don't have GitHub Copilot? Use your own API keys with any compatible provider.
 
+### Supported Providers
+
+| Provider | Type Value | Notes |
+|----------|-----------|-------|
+| OpenAI | `openai` | OpenAI API and OpenAI-compatible endpoints |
+| Azure OpenAI / Azure AI Foundry | `azure` | Azure-hosted models |
+| Anthropic | `anthropic` | Claude models |
+| Ollama | `openai` | Local models via OpenAI-compatible API |
+| Microsoft Foundry Local | `openai` | Run AI models locally on your device via OpenAI-compatible API |
+| Other OpenAI-compatible | `openai` | vLLM, LiteLLM, LM Studio, etc. |
+
 ### OpenAI
 
 ```yaml
@@ -179,7 +188,20 @@ k9s:
         apiVersion: "2024-06-01"
 ```
 
-### Self-Hosted (Ollama, LM Studio, vLLM, etc.)
+### Anthropic
+
+```yaml
+k9s:
+  ai:
+    enabled: true
+    model: claude-sonnet-4-20250514
+    provider:
+      type: anthropic
+      baseURL: https://api.anthropic.com
+      apiKey: sk-ant-xxxxxxxxxxxxxxxx
+```
+
+### Self-Hosted (Ollama, Microsoft Foundry Local, vLLM, LiteLLM, etc.)
 
 ```yaml
 k9s:
@@ -196,15 +218,26 @@ k9s:
 
 ---
 
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `:ai` | Open the AI chat assistant |
+| `:ai models` | Browse and switch between available models (Copilot only) |
+| `:byok` | Interactive BYOK provider setup — navigate with `Tab`, select with `Enter`, `Esc` to cancel |
+| `Shift-A` | Quick shortcut to open AI chat from any view |
+
 ## Model Selection
 
-K9s AI can list all models available on your Copilot account:
+For **Copilot** users, list all available models:
 
 ```
 :ai models
 ```
 
-This opens a picker showing available models with the active one marked. Press `Enter` to switch. You can also press `Ctrl-N` from within the AI chat view.
+This opens a picker showing available models with the active one marked. Press `Enter` to switch.
+
+For **BYOK** users, set the model in your config or via `:byok`:
 
 To set a default model in config:
 
@@ -272,7 +305,7 @@ make build
 ### Running with Docker
 
 ```shell
-docker run --rm -it -v ~/.kube/config:/root/.kube/config orshohat/k9s-ai:latest
+docker run --rm -it -v ~/.kube/config:/root/.kube/config orshohat1/k9s-ai:latest
 ```
 
 Build your own image:

@@ -62,6 +62,11 @@ func (m *Menu) SetPersistentHints(hh model.MenuHints) {
 	m.persistentHints = hh
 }
 
+// GetPersistentHints returns the current persistent hints.
+func (m *Menu) GetPersistentHints() model.MenuHints {
+	return m.persistentHints
+}
+
 // StackPushed notifies a component was added.
 func (m *Menu) StackPushed(c model.Component) {
 	m.HydrateMenu(append(c.Hints(), m.persistentHints...))

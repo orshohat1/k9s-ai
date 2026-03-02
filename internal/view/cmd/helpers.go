@@ -52,6 +52,9 @@ func splitKv(s string) (k, v string, ok bool) {
 	return "", "", false
 }
 
+// BuiltinCmds lists built-in commands for tab-completion.
+var BuiltinCmds = []string{"ai", "byok"}
+
 // ShouldAddSuggest checks if a suggestion match the given command.
 func ShouldAddSuggest(command, suggest string) (string, bool) {
 	if command != suggest && strings.HasPrefix(suggest, command) {
