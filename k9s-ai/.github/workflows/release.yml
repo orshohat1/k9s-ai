@@ -38,4 +38,4 @@ jobs:
           version: "~> v2"
           args: release --config k9s-ai/.goreleaser.yml --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PAT }}
