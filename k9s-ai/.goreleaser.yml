@@ -123,49 +123,51 @@ nfpms:
         file_info:
           mode: 0644
 
-snapcrafts:
-  - id: k9s-ai
-    name: k9s-ai
-    summary: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
-    description: |
-      K9s AI provides a terminal UI to interact with your Kubernetes clusters
-      with built-in AI/GitHub Copilot assistant for diagnostics, security
-      auditing, and resource optimization.
-    grade: stable
-    confinement: strict
-    license: Apache-2.0
-    apps:
-      k9s-ai:
-        command: k9s-ai
-        plugs:
-          - home
-          - network
-          - network-bind
-          - personal-files
+# snapcrafts disabled for now — requires snapcraft in CI
+# snapcrafts:
+#   - id: k9s-ai
+#     name: k9s-ai
+#     summary: "K9s AI — Kubernetes CLI with built-in AI/Copilot assistant"
+#     description: |
+#       K9s AI provides a terminal UI to interact with your Kubernetes clusters
+#       with built-in AI/GitHub Copilot assistant for diagnostics, security
+#       auditing, and resource optimization.
+#     grade: stable
+#     confinement: strict
+#     license: Apache-2.0
+#     apps:
+#       k9s-ai:
+#         command: k9s-ai
+#         plugs:
+#           - home
+#           - network
+#           - network-bind
+#           - personal-files
 
-dockers:
-  - image_templates:
-      - "orshohat/k9s-ai:{{ .Version }}-amd64"
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/amd64"
-    goarch: amd64
-  - image_templates:
-      - "orshohat/k9s-ai:{{ .Version }}-arm64"
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/arm64"
-    goarch: arm64
+# Docker builds disabled for initial release — requires Dockerfile adjustments
+# dockers:
+#   - image_templates:
+#       - "orshohat/k9s-ai:{{ .Version }}-amd64"
+#     use: buildx
+#     build_flag_templates:
+#       - "--platform=linux/amd64"
+#     goarch: amd64
+#   - image_templates:
+#       - "orshohat/k9s-ai:{{ .Version }}-arm64"
+#     use: buildx
+#     build_flag_templates:
+#       - "--platform=linux/arm64"
+#     goarch: arm64
 
-docker_manifests:
-  - name_template: "orshohat/k9s-ai:{{ .Version }}"
-    image_templates:
-      - "orshohat/k9s-ai:{{ .Version }}-amd64"
-      - "orshohat/k9s-ai:{{ .Version }}-arm64"
-  - name_template: "orshohat/k9s-ai:latest"
-    image_templates:
-      - "orshohat/k9s-ai:{{ .Version }}-amd64"
-      - "orshohat/k9s-ai:{{ .Version }}-arm64"
+# docker_manifests:
+#   - name_template: "orshohat/k9s-ai:{{ .Version }}"
+#     image_templates:
+#       - "orshohat/k9s-ai:{{ .Version }}-amd64"
+#       - "orshohat/k9s-ai:{{ .Version }}-arm64"
+#   - name_template: "orshohat/k9s-ai:latest"
+#     image_templates:
+#       - "orshohat/k9s-ai:{{ .Version }}-amd64"
+#       - "orshohat/k9s-ai:{{ .Version }}-arm64"
 
 checksum:
   name_template: "checksums.sha256"
