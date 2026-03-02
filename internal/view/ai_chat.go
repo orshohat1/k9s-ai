@@ -41,6 +41,7 @@ type AIChatView struct {
 	history        []chatMessage
 	streaming      bool
 	streamingHeader bool // true if we've printed the Copilot header for current stream
+	thinkingShown  bool // true if the inline thinking indicator is displayed
 	fullScreen     bool
 	resKind        string
 	resName        string
@@ -300,7 +301,7 @@ func (v *AIChatView) setStatusReady() {
 
 func (v *AIChatView) setStatusThinking() {
 	v.statusBar.Clear()
-	fmt.Fprintf(v.statusBar, " [yellow::b]○ Thinking...[-::-]  [gray::-]please wait[-::-]")
+	fmt.Fprintf(v.statusBar, " [yellow::b]● Thinking...[-::-]")
 }
 
 func (v *AIChatView) setStatusReasoning() {
@@ -317,6 +318,33 @@ func (v *AIChatView) setStatusTool(toolName string) {
 	v.statusBar.Clear()
 	label := toolDisplayName(toolName)
 	fmt.Fprintf(v.statusBar, " [orange::b]⚡ %s[-::-]", label)
+}
+
+// --------------------------------------------------------------------------
+// Thinking indicator
+
+func (v *AIChatView) showThinkingIndicator() {
+	v.mu.Lock()
+	v.thinkingShown = true
+	v.mu.Unlock()
+	s := v.app.Styles
+	dimColor := s.Frame().Menu.FgColor
+	fmt.Fprintf(v.output, "\n  [%s::d]%s[-::-]\n", dimColor, chatSeparator)
+	fmt.Fprintf(v.output, "  [yellow::d]● Thinking...[-::-]\n")
+	v.output.ScrollToEnd()
+}
+
+func (v *AIChatView) clearThinkingIndicator() {
+	v.mu.Lock()
+	if !v.thinkingShown {
+		v.mu.Unlock()
+		return
+	}
+	v.thinkingShown = false
+	v.mu.Unlock()
+	// Re-render chat without the thinking indicator, then re-print the
+	// Copilot header so the streaming response follows cleanly.
+	v.reRenderChat()
 }
 
 // --------------------------------------------------------------------------
@@ -345,6 +373,7 @@ func (v *AIChatView) handleInput(key tcell.Key) {
 	}
 
 	v.appendMessage("user", text)
+	v.showThinkingIndicator()
 	go v.sendMessage(text)
 }
 
@@ -896,6 +925,9 @@ func (l *chatListener) AIResponseDelta(delta string) {
 
 	// Stream the delta directly to the output so the user sees it live.
 	l.view.app.QueueUpdateDraw(func() {
+		// Clear thinking indicator on first real content.
+		l.view.clearThinkingIndicator()
+
 		// Print the Copilot header once at start of streaming.
 		l.view.mu.Lock()
 		if !l.view.streamingHeader {
@@ -951,6 +983,9 @@ func (l *chatListener) AIReasoningComplete(content string) {
 
 func (l *chatListener) AIToolStart(toolName string) {
 	l.view.app.QueueUpdateDraw(func() {
+		// Clear thinking indicator on first tool activity.
+		l.view.clearThinkingIndicator()
+
 		l.view.setStatusTool(toolName)
 		s := l.view.app.Styles
 		dimColor := s.Frame().Menu.FgColor
