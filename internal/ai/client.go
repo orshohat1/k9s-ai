@@ -303,11 +303,12 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 				mutation := IsMutationTool(input.ToolName)
 
 				// Notify UI of tool activity (step display).
+				// For mutation tools, defer notification until after approval.
 				c.mx.RLock()
 				actFn := c.toolActivityFn
 				c.mx.RUnlock()
 
-				if actFn != nil {
+				if !mutation && actFn != nil {
 					actFn(input.ToolName, desc, mutation)
 				}
 
@@ -324,6 +325,9 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 
 					// User already confirmed after seeing the plan → auto-allow.
 					if auto {
+						if actFn != nil {
+							actFn(input.ToolName, desc, mutation)
+						}
 						c.log.Info("Mutation auto-approved (user confirmed after plan)", "tool", input.ToolName)
 						return &copilot.PreToolUseHookOutput{
 							PermissionDecision: "allow",
@@ -631,7 +635,7 @@ func extractResourceType(gvr string) string {
 
 func k9sSystemMessage() string {
 	return `You are an expert Kubernetes cluster assistant in K9s, a terminal UI.
-You have read-only tools and mutation tools. Mutation tools require user approval.
+You have read-only tools and mutation tools.
 Use GVR format: 'apps/v1/deployments', 'v1/pods', 'batch/v1/jobs', etc.
 
 Skill playbooks (load via get_skill_playbook):
@@ -641,12 +645,21 @@ Skill playbooks (load via get_skill_playbook):
 - observation: Health check, deep-dive, log analysis
 Load the relevant playbook FIRST when diagnosing, auditing, or optimizing.
 
+IMPORTANT — Mutation flow (patch, scale, restart, delete):
+Mutation tools are gated. Your FIRST call to any mutation tool will be AUTOMATICALLY DENIED.
+This is NOT an error — it is by design. When denied:
+1. Present your complete plan to the user: list every change (resource, namespace, what changes, why).
+2. Ask the user to confirm (e.g. "Shall I apply this?").
+3. Do NOT call mutation tools again until the user replies.
+When the user confirms, call the mutation tools again — they will be allowed.
+If the user declines, present the fix as kubectl commands or YAML.
+
 Workflow:
 1. Use read-only tools to investigate. Keep tool calls minimal.
 2. Present findings: root cause, current state, fix options.
 3. STOP — do NOT call mutation tools unless the user explicitly asks to fix/apply/patch.
-4. When user asks for a fix, use mutation tools. An approval dialog will appear.
-5. If denied, present fix as kubectl/YAML for manual application.
+4. When user asks for a fix, call the mutation tool. It will be denied (see above). Present your plan.
+5. After user confirms, call mutation tools again to apply.
 
 Be concise. Use bullet points. Flag security concerns. Never ask the user to run kubectl.`
 }
