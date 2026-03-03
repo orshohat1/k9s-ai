@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/derailed/k9s/internal/ai"
 	"github.com/derailed/k9s/internal/config"
@@ -21,6 +22,13 @@ import (
 	"github.com/derailed/tcell/v2"
 	"github.com/derailed/tview"
 	"k8s.io/apimachinery/pkg/labels"
+)
+
+// Pre-compiled regexes for markdown rendering (avoid recompiling per call).
+var (
+	numberedListRe = regexp.MustCompile(`^\d+\.\s`)
+	boldRe         = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	codeRe         = regexp.MustCompile("`([^`]+)`")
 )
 
 const (
@@ -353,9 +361,18 @@ func (v *AIChatView) clearThinkingIndicator() {
 	}
 	v.thinkingShown = false
 	v.mu.Unlock()
-	// Re-render chat without the thinking indicator, then re-print the
-	// Copilot header so the streaming response follows cleanly.
-	v.reRenderChat()
+	// Remove only the thinking indicator lines instead of re-rendering the entire chat.
+	current := v.output.GetText(false)
+	lines := strings.Split(current, "\n")
+	// Strip trailing empty lines, then remove the last 2 lines (separator + thinking).
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) >= 2 {
+		lines = lines[:len(lines)-2]
+	}
+	v.output.Clear()
+	fmt.Fprint(v.output, strings.Join(lines, "\n"))
 }
 
 // --------------------------------------------------------------------------
@@ -691,7 +708,7 @@ func (v *AIChatView) renderFormattedContent(content string) {
 		}
 
 		// Numbered lists.
-		if matched, _ := regexp.MatchString(`^\d+\.\s`, trimmed); matched {
+		if numberedListRe.MatchString(trimmed) {
 			formatted := renderInlineFormatting(trimmed)
 			fmt.Fprintf(v.output, "    %s\n", formatted)
 			continue
@@ -808,10 +825,8 @@ func parseTableCells(line string) []string {
 }
 
 func stripFormatting(s string) string {
-	// Remove markdown bold.
-	s = regexp.MustCompile(`\*\*(.+?)\*\*`).ReplaceAllString(s, "$1")
-	// Remove markdown inline code.
-	s = regexp.MustCompile("`([^`]+)`").ReplaceAllString(s, "$1")
+	s = boldRe.ReplaceAllString(s, "$1")
+	s = codeRe.ReplaceAllString(s, "$1")
 	return s
 }
 
@@ -824,14 +839,8 @@ func maxInt(a, b int) int {
 
 // renderInlineFormatting converts inline markdown to tview colors.
 func renderInlineFormatting(text string) string {
-	// Bold: **text** -> bold.
-	boldRe := regexp.MustCompile(`\*\*(.+?)\*\*`)
 	text = boldRe.ReplaceAllString(text, "[::b]$1[-::-]")
-
-	// Inline code: `text` -> highlighted.
-	codeRe := regexp.MustCompile("`([^`]+)`")
 	text = codeRe.ReplaceAllString(text, "[aqua::-]$1[-::-]")
-
 	return text
 }
 
@@ -921,6 +930,11 @@ type chatListener struct {
 	view            *AIChatView
 	streamedContent *strings.Builder
 	mu              *sync.Mutex
+	// Streaming delta throttle buffer.
+	deltaBuf     strings.Builder
+	deltaBufMu   sync.Mutex
+	flushTicker  *time.Ticker
+	flushStop    chan struct{}
 }
 
 func (l *chatListener) AIResponseStart() {
@@ -934,7 +948,40 @@ func (l *chatListener) AIResponseDelta(delta string) {
 	l.streamedContent.WriteString(delta)
 	l.mu.Unlock()
 
-	// Stream the delta directly to the output so the user sees it live.
+	// Buffer deltas and flush at ~30fps to avoid per-token QueueUpdateDraw overhead.
+	l.deltaBufMu.Lock()
+	l.deltaBuf.WriteString(delta)
+	if l.flushTicker == nil {
+		l.flushStop = make(chan struct{})
+		l.flushTicker = time.NewTicker(33 * time.Millisecond)
+		go l.flushLoop()
+	}
+	l.deltaBufMu.Unlock()
+}
+
+// flushLoop drains the delta buffer to the UI at a throttled rate.
+func (l *chatListener) flushLoop() {
+	for {
+		select {
+		case <-l.flushTicker.C:
+			l.flushDeltaBuffer()
+		case <-l.flushStop:
+			l.flushDeltaBuffer()
+			return
+		}
+	}
+}
+
+func (l *chatListener) flushDeltaBuffer() {
+	l.deltaBufMu.Lock()
+	if l.deltaBuf.Len() == 0 {
+		l.deltaBufMu.Unlock()
+		return
+	}
+	chunk := l.deltaBuf.String()
+	l.deltaBuf.Reset()
+	l.deltaBufMu.Unlock()
+
 	l.view.app.QueueUpdateDraw(func() {
 		// Clear thinking indicator on first real content.
 		l.view.clearThinkingIndicator()
@@ -951,14 +998,26 @@ func (l *chatListener) AIResponseDelta(delta string) {
 		} else {
 			l.view.mu.Unlock()
 		}
-		// Write the raw delta text.
-		fmt.Fprint(l.view.output, delta)
+		fmt.Fprint(l.view.output, chunk)
 		l.view.output.ScrollToEnd()
 		l.view.setStatusStreaming()
 	})
 }
 
+func (l *chatListener) stopFlush() {
+	l.deltaBufMu.Lock()
+	if l.flushTicker != nil {
+		l.flushTicker.Stop()
+		close(l.flushStop)
+		l.flushTicker = nil
+	}
+	l.deltaBufMu.Unlock()
+}
+
 func (l *chatListener) AIResponseComplete(text string) {
+	// Stop the throttle ticker and flush any remaining buffered deltas.
+	l.stopFlush()
+
 	if text != "" {
 		l.mu.Lock()
 		l.streamedContent.Reset()
@@ -1025,32 +1084,64 @@ func (v *AIChatView) approvalCallback(toolName, description string, args map[str
 func (v *AIChatView) showApprovalDialog(toolName, description string, args map[string]any, result chan<- bool) {
 	styles := v.app.Styles.Dialog()
 
-	// Build a descriptive message.
-	msg := fmt.Sprintf("[::b]%s[::-]\n\n", description)
+	getStr := func(key string) string {
+		if args == nil {
+			return ""
+		}
+		s, _ := args[key].(string)
+		return s
+	}
 
-	// Show relevant args.
-	if gvr, ok := args["gvr"].(string); ok {
-		msg += fmt.Sprintf("  Resource: %s\n", gvr)
+	// Build a clear, detailed message about what will change.
+	resName := getStr("name")
+	if resName == "" {
+		resName = getStr("podName")
 	}
-	if name, ok := args["name"].(string); ok {
-		msg += fmt.Sprintf("  Name:     %s\n", name)
+	ns := getStr("namespace")
+	gvr := getStr("gvr")
+
+	// Title line describing the action.
+	var title string
+	switch toolName {
+	case "patch_resource":
+		title = "Patch " + gvr
+	case "scale_resource":
+		title = "Scale " + gvr
+	case "restart_resource":
+		title = "Restart " + gvr
+	case "delete_resource":
+		title = "Delete " + gvr
+	default:
+		title = toolName
 	}
-	if ns, ok := args["namespace"].(string); ok && ns != "" {
-		msg += fmt.Sprintf("  Namespace: %s\n", ns)
+	if resName != "" {
+		title += " / " + resName
 	}
-	if patch, ok := args["patch"].(string); ok {
-		// Pretty-print the patch JSON.
+	if ns != "" {
+		title += " (ns: " + ns + ")"
+	}
+
+	// Body with details.
+	msg := ""
+	if patch := getStr("patch"); patch != "" {
 		var prettyPatch map[string]any
 		if err := json.Unmarshal([]byte(patch), &prettyPatch); err == nil {
 			if b, err := json.MarshalIndent(prettyPatch, "  ", "  "); err == nil {
-				msg += fmt.Sprintf("\n  Patch:\n  %s\n", string(b))
+				msg = fmt.Sprintf("[::b]Changes:[::-]\n  %s", string(b))
 			}
-		} else {
-			msg += fmt.Sprintf("\n  Patch: %s\n", patch)
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("[::b]Patch:[::-] %s", patch)
 		}
 	}
 	if r, ok := args["replicas"]; ok {
-		msg += fmt.Sprintf("  Replicas: %v\n", r)
+		msg = fmt.Sprintf("[::b]Scale to:[::-] %v replicas", r)
+	}
+	if toolName == "delete_resource" {
+		msg = "[red::b]This will permanently delete the resource.[::-]"
+	}
+	if toolName == "restart_resource" {
+		msg = "This will perform a rolling restart."
 	}
 
 	dismissed := false
@@ -1088,7 +1179,7 @@ func (v *AIChatView) showApprovalDialog(toolName, description string, args map[s
 	}
 	f.SetFocus(0) // Focus on Deny by default — safe side.
 
-	modal := tview.NewModalForm("<Approve Cluster Change>", f)
+	modal := tview.NewModalForm("<"+title+">", f)
 	modal.SetText(msg)
 	modal.SetTextColor(styles.FgColor.Color())
 	modal.SetDoneFunc(func(int, string) {

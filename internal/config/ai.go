@@ -73,6 +73,7 @@ func NewAI() AI {
 		Streaming:       true,
 		MaxContextLines: 500,
 		AutoDiagnose:    false,
+		ReasoningEffort: "low",
 	}
 }
 

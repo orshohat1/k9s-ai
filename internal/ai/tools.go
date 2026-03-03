@@ -567,13 +567,13 @@ type patchResourceParams struct {
 	GVR       string `json:"gvr" jsonschema:"Group/Version/Resource identifier, e.g. apps/v1/deployments, v1/services"`
 	Name      string `json:"name" jsonschema:"Resource name"`
 	Namespace string `json:"namespace" jsonschema:"Kubernetes namespace (empty for cluster-scoped resources)"`
-	Patch     string `json:"patch" jsonschema:"JSON merge patch to apply, e.g. {\"spec\":{\"replicas\":3}}"`
+	Patch     string `json:"patch" jsonschema:"JSON strategic merge patch to apply, e.g. {\"spec\":{\"replicas\":3}}. For containers use strategic merge: include the container name field so the correct container is matched."`
 }
 
 func (tf *ToolFactory) patchResourceTool() copilot.Tool {
 	return copilot.DefineTool(
 		"patch_resource",
-		"Apply a JSON merge patch to a Kubernetes resource. Use this to update deployments, services, configmaps, etc. For example: fix a bad container image, change environment variables, update labels, or modify resource limits.",
+		"Apply a strategic merge patch to a Kubernetes resource. Use this to update deployments, services, configmaps, etc. For example: fix a bad container image, change environment variables, update labels, or modify resource limits. Always include the container 'name' field when patching containers so the correct container is targeted.",
 		func(params patchResourceParams, inv copilot.ToolInvocation) (any, error) {
 			tf.log.Info("Patching resource", "gvr", params.GVR, "name", params.Name, "ns", params.Namespace)
 
@@ -591,14 +591,31 @@ func (tf *ToolFactory) patchResourceTool() copilot.Tool {
 			res := dynClient.Resource(gvr)
 			patchData := []byte(params.Patch)
 
+			// Use StrategicMergePatchType for built-in resources (handles arrays
+			// like containers correctly by merging on the "name" key).
+			// Fall back to MergePatchType for CRDs which don't have strategic
+			// merge patch metadata.
+			patchType := types.StrategicMergePatchType
+
 			if params.Namespace != "" {
 				result, err = res.Namespace(params.Namespace).Patch(
-					context.Background(), params.Name, types.MergePatchType, patchData, metav1.PatchOptions{},
+					context.Background(), params.Name, patchType, patchData, metav1.PatchOptions{},
 				)
+				// If strategic merge fails (e.g. CRD), retry with merge patch.
+				if err != nil && strings.Contains(err.Error(), "strategic merge patch") {
+					result, err = res.Namespace(params.Namespace).Patch(
+						context.Background(), params.Name, types.MergePatchType, patchData, metav1.PatchOptions{},
+					)
+				}
 			} else {
 				result, err = res.Patch(
-					context.Background(), params.Name, types.MergePatchType, patchData, metav1.PatchOptions{},
+					context.Background(), params.Name, patchType, patchData, metav1.PatchOptions{},
 				)
+				if err != nil && strings.Contains(err.Error(), "strategic merge patch") {
+					result, err = res.Patch(
+						context.Background(), params.Name, types.MergePatchType, patchData, metav1.PatchOptions{},
+					)
+				}
 			}
 			if err != nil {
 				return nil, fmt.Errorf("failed to patch %s %s/%s: %w", params.GVR, params.Namespace, params.Name, err)

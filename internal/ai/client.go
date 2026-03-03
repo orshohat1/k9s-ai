@@ -70,17 +70,19 @@ type ModelInfo struct {
 
 // AIClient wraps the Copilot SDK client with k9s-specific configuration.
 type AIClient struct {
-	client         *copilot.Client
-	session        *copilot.Session
-	cfg            config.AI
-	tools          []copilot.Tool
-	allTools       []copilot.Tool
-	skills         *SkillRegistry
-	initialized    bool
-	approvalFn     ApprovalFunc
-	toolActivityFn ToolActivityFunc
-	mx             sync.RWMutex
-	log            *slog.Logger
+	client          *copilot.Client
+	session         *copilot.Session
+	cfg             config.AI
+	tools           []copilot.Tool
+	allTools        []copilot.Tool
+	skills          *SkillRegistry
+	initialized     bool
+	approvalFn      ApprovalFunc
+	toolActivityFn  ToolActivityFunc
+	planPresented   bool // set after first mutation denied; persists across turns
+	autoApprove     bool // set when user responds after a plan; mutations auto-allowed
+	mx              sync.RWMutex
+	log             *slog.Logger
 }
 
 // NewAIClient creates a new AI client instance.
@@ -303,27 +305,53 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 				// Notify UI of tool activity (step display).
 				c.mx.RLock()
 				actFn := c.toolActivityFn
-				appFn := c.approvalFn
 				c.mx.RUnlock()
 
 				if actFn != nil {
 					actFn(input.ToolName, desc, mutation)
 				}
 
-				// Gate mutation tools behind user approval.
-				if mutation && appFn != nil {
-					if !appFn(input.ToolName, desc, args) {
-						c.log.Info("Mutation denied by user", "tool", input.ToolName)
+				// Gate mutation tools: require the model to present its plan first.
+				//
+				// Flow:
+				//  Turn 1 – model tries mutation → denied, must explain plan.
+				//  Turn 2 – user says "apply" → autoApprove=true → mutations allowed.
+				if mutation {
+					c.mx.RLock()
+					auto := c.autoApprove
+					planned := c.planPresented
+					c.mx.RUnlock()
+
+					// User already confirmed after seeing the plan → auto-allow.
+					if auto {
+						c.log.Info("Mutation auto-approved (user confirmed after plan)", "tool", input.ToolName)
 						return &copilot.PreToolUseHookOutput{
-							PermissionDecision:       "deny",
-							PermissionDecisionReason: "User denied this mutation. Present the suggested fix as text so the user can apply it manually if they choose. Do not retry the same mutation.",
+							PermissionDecision: "allow",
+							ModifiedArgs:       input.ToolArgs,
+							AdditionalContext:  "User approved this mutation. After applying, verify the result by checking the resource state.",
 						}, nil
 					}
-					c.log.Info("Mutation approved by user", "tool", input.ToolName)
+
+					// First mutation attempt this turn → deny, ask model to present plan.
+					if !planned {
+						c.mx.Lock()
+						c.planPresented = true
+						c.mx.Unlock()
+						c.log.Info("Mutation deferred — asking model to present plan first", "tool", input.ToolName)
+						return &copilot.PreToolUseHookOutput{
+							PermissionDecision:       "deny",
+							PermissionDecisionReason: "STOP. Before making any changes, you MUST first present your complete plan to the user. " +
+								"Explain every change you intend to make (resource names, namespaces, what will change and why). " +
+								"Ask the user to confirm before proceeding. Do NOT call mutation tools until the user replies.",
+						}, nil
+					}
+
+					// Plan was already presented in this same turn but model retried
+					// without waiting for user confirmation → deny again.
+					c.log.Info("Mutation denied — waiting for user confirmation", "tool", input.ToolName)
 					return &copilot.PreToolUseHookOutput{
-						PermissionDecision: "allow",
-						ModifiedArgs:       input.ToolArgs,
-						AdditionalContext:  "User approved this mutation. After applying, verify the result by checking the resource state.",
+						PermissionDecision:       "deny",
+						PermissionDecisionReason: "You already presented the plan. Wait for the user to confirm before calling mutation tools. Do NOT retry.",
 					}, nil
 				}
 
@@ -336,12 +364,21 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 				c.log.Debug("Tool completed", "tool", input.ToolName)
 				return &copilot.PostToolUseHookOutput{}, nil
 			},
-			OnErrorOccurred: func(input copilot.ErrorOccurredHookInput, inv copilot.HookInvocation) (*copilot.ErrorOccurredHookOutput, error) {
-				c.log.Error("Session error", "context", input.ErrorContext, "error", input.Error)
-				return &copilot.ErrorOccurredHookOutput{
-					ErrorHandling: "retry",
-				}, nil
-			},
+			OnErrorOccurred: func() func(copilot.ErrorOccurredHookInput, copilot.HookInvocation) (*copilot.ErrorOccurredHookOutput, error) {
+				retries := 0
+				return func(input copilot.ErrorOccurredHookInput, inv copilot.HookInvocation) (*copilot.ErrorOccurredHookOutput, error) {
+					c.log.Error("Session error", "context", input.ErrorContext, "error", input.Error, "retries", retries)
+					if retries >= 2 {
+						return &copilot.ErrorOccurredHookOutput{
+							ErrorHandling: "throw",
+						}, nil
+					}
+					retries++
+					return &copilot.ErrorOccurredHookOutput{
+						ErrorHandling: "retry",
+					}, nil
+				}
+			}(),
 		},
 	}
 
@@ -427,6 +464,17 @@ func (c *AIClient) Send(ctx context.Context, prompt string, listener Listener) e
 	if err != nil {
 		return err
 	}
+
+	// If the model presented a mutation plan in a previous turn and the user
+	// is now responding, treat this turn as user-approved (no dialog needed).
+	c.mx.Lock()
+	if c.planPresented {
+		c.autoApprove = true
+		c.planPresented = false
+	} else {
+		c.autoApprove = false
+	}
+	c.mx.Unlock()
 
 	listener.AIResponseStart()
 
@@ -582,59 +630,23 @@ func extractResourceType(gvr string) string {
 }
 
 func k9sSystemMessage() string {
-	base := `You are an expert Kubernetes cluster assistant integrated into K9s, a terminal-based Kubernetes management UI.
+	return `You are an expert Kubernetes cluster assistant in K9s, a terminal UI.
+You have read-only tools and mutation tools. Mutation tools require user approval.
+Use GVR format: 'apps/v1/deployments', 'v1/pods', 'batch/v1/jobs', etc.
 
-You have tools to both read and modify resources in the cluster. All mutations require explicit user approval via an interactive dialog.
+Skill playbooks (load via get_skill_playbook):
+- diagnostics: CrashLoopBackOff, OOMKilled, ImagePullBackOff, Pending, ConfigError
+- security: RBAC audit, container security, network policies
+- optimization: Right-sizing, scaling, cost
+- observation: Health check, deep-dive, log analysis
+Load the relevant playbook FIRST when diagnosing, auditing, or optimizing.
 
-Read-only tools:
-- get_resource: Fetch a specific resource by GVR, name, and namespace (returns YAML)
-- list_resources: List resources of a given type with optional label selectors and limits
-- describe_resource: Get full kubectl-style description including events and conditions
-- get_logs: Fetch container logs (supports tail, previous containers for crash analysis)
-- get_events: Fetch cluster events filtered by namespace, resource, or type (Normal/Warning)
-- get_cluster_health: High-level cluster overview — node count, pod status summary, server version
-- get_pod_diagnostics: Comprehensive pod diagnostics — phase, container states, restarts, exit codes, probes, resource limits
-- check_rbac: Verify if the current user can perform a specific verb on a resource
+Workflow:
+1. Use read-only tools to investigate. Keep tool calls minimal.
+2. Present findings: root cause, current state, fix options.
+3. STOP — do NOT call mutation tools unless the user explicitly asks to fix/apply/patch.
+4. When user asks for a fix, use mutation tools. An approval dialog will appear.
+5. If denied, present fix as kubectl/YAML for manual application.
 
-Mutation tools (require user approval before executing):
-- patch_resource: Apply a JSON merge patch to any resource. Use this to fix bad images, update env vars, change labels, modify resource limits, etc.
-  Example: to fix a bad image, patch the deployment with {"spec":{"template":{"spec":{"containers":[{"name":"CONTAINER_NAME","image":"CORRECT_IMAGE"}]}}}}
-- scale_resource: Scale a Deployment/StatefulSet/ReplicaSet to a desired replica count
-- restart_resource: Rolling restart a Deployment/StatefulSet/DaemonSet (like kubectl rollout restart)
-- delete_resource: Delete a resource (stuck pods, failed jobs, etc.)
-
-GVR format: Use 'group/version/resource' for namespaced API groups (e.g., 'apps/v1/deployments', 'batch/v1/jobs') or 'version/resource' for core API (e.g., 'v1/pods', 'v1/services').
-
-Skill playbooks (loaded on demand via get_skill_playbook tool):
-- diagnostics: Step-by-step guides for CrashLoopBackOff, OOMKilled, ImagePullBackOff, Pending pods, CreateContainerConfigError
-- security: RBAC audit, container security scan, network policy analysis
-- optimization: Resource right-sizing, scaling recommendations, cost optimization
-- observation: Quick health check, workload deep-dive, log analysis
-When you need to diagnose, audit, optimize, or observe — call get_skill_playbook FIRST to load the relevant playbook, then follow it.
-
-Diagnostic workflow:
-1. Call get_skill_playbook to load the relevant playbook for the task
-2. Follow the playbook steps using the read-only tools
-3. Present your findings: root cause, current state, and available fix options
-4. STOP and wait for the user to decide — do NOT apply any fix automatically
-
-CRITICAL RULE — diagnosis vs fix:
-- By default, ONLY diagnose and present findings. NEVER call mutation tools unless the user explicitly asks you to fix, apply, patch, scale, restart, or delete something.
-- After diagnosing, present the root cause and suggest fix options as text (what you would change and why).
-- Only when the user says something like "fix it", "apply option A", "go ahead", "patch it", etc., THEN use the mutation tools.
-- The system will show an approval dialog when you call a mutation tool — the user gets a final confirm/deny.
-- If the user denies a mutation, present the fix as kubectl commands or YAML so they can apply it manually.
-- Do NOT tell the user to run kubectl commands during diagnosis — use the read-only tools yourself.
-
-Guidelines:
-- Be concise and actionable — users are SREs/DevOps engineers in a terminal
-- When diagnosing issues, start with the most likely root cause
-- Use bullet points and short paragraphs for readability in a terminal
-- Flag security concerns when you notice them
-- If you need more information to diagnose, use the available read-only tools — do not ask the user to run commands manually
-- Always consider the Kubernetes context (namespace, cluster) when answering
-- When listing resources, use sensible limits to avoid overwhelming output
-- Keep tool calls to the minimum needed — avoid redundant calls that slow down responses`
-
-	return base
+Be concise. Use bullet points. Flag security concerns. Never ask the user to run kubectl.`
 }
