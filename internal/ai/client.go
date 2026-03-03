@@ -328,6 +328,11 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 						if actFn != nil {
 							actFn(input.ToolName, desc, mutation)
 						}
+						// Reset autoApprove now that a mutation has been consumed.
+						// Next mutation will require a new plan cycle.
+						c.mx.Lock()
+						c.autoApprove = false
+						c.mx.Unlock()
 						c.log.Info("Mutation auto-approved (user confirmed after plan)", "tool", input.ToolName)
 						return &copilot.PreToolUseHookOutput{
 							PermissionDecision: "allow",
@@ -471,12 +476,11 @@ func (c *AIClient) Send(ctx context.Context, prompt string, listener Listener) e
 
 	// If the model presented a mutation plan in a previous turn and the user
 	// is now responding, treat this turn as user-approved (no dialog needed).
+	// Keep autoApprove sticky — only clear it after a mutation is actually allowed.
 	c.mx.Lock()
 	if c.planPresented {
 		c.autoApprove = true
 		c.planPresented = false
-	} else {
-		c.autoApprove = false
 	}
 	c.mx.Unlock()
 
