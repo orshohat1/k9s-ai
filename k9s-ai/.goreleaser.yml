@@ -143,36 +143,6 @@ snapcrafts:
           - network-bind
           - personal-files
 
-dockers:
-  - image_templates:
-      - "orshohat1/k9s-ai:{{ .Version }}-amd64"
-    use: buildx
-    dockerfile: k9s-ai/Dockerfile.goreleaser
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--cache-from=type=gha,scope=docker-amd64"
-      - "--cache-to=type=gha,mode=max,scope=docker-amd64"
-    goarch: amd64
-  - image_templates:
-      - "orshohat1/k9s-ai:{{ .Version }}-arm64"
-    use: buildx
-    dockerfile: k9s-ai/Dockerfile.goreleaser
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--cache-from=type=gha,scope=docker-arm64"
-      - "--cache-to=type=gha,mode=max,scope=docker-arm64"
-    goarch: arm64
-
-docker_manifests:
-  - name_template: "orshohat1/k9s-ai:{{ .Version }}"
-    image_templates:
-      - "orshohat1/k9s-ai:{{ .Version }}-amd64"
-      - "orshohat1/k9s-ai:{{ .Version }}-arm64"
-  - name_template: "orshohat1/k9s-ai:latest"
-    image_templates:
-      - "orshohat1/k9s-ai:{{ .Version }}-amd64"
-      - "orshohat1/k9s-ai:{{ .Version }}-arm64"
-
 checksum:
   name_template: "checksums.sha256"
 

@@ -51,12 +51,6 @@ sudo rpm -i https://github.com/orshohat1/k9s-ai/releases/latest/download/k9s-ai_
 sudo snap install k9s-ai
 ```
 
-### Docker
-
-```shell
-docker run --rm -it -v ~/.kube:/root/.kube orshohat1/k9s-ai:latest
-```
-
 ### Binary Downloads
 
 Download archives for all platforms from [GitHub Releases](https://github.com/orshohat1/k9s-ai/releases):
@@ -302,15 +296,13 @@ make build
 ./execs/k9s-ai
 ```
 
-### Running with Docker
+## Running with Docker
+
+Docker images are not yet published. You can build your own:
 
 ```shell
-docker run --rm -it -v ~/.kube/config:/root/.kube/config orshohat1/k9s-ai:latest
-```
-
-Build your own image:
-
-```shell
+git clone https://github.com/orshohat1/k9s-ai.git
+cd k9s-ai
 docker build -t k9s-ai:local -f k9s-ai/Dockerfile .
 docker run --rm -it -v ~/.kube/config:/root/.kube/config k9s-ai:local
 ```
