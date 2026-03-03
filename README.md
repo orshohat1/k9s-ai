@@ -219,7 +219,13 @@ k9s:
 | `:ai` | Open the AI chat assistant |
 | `:ai models` | Browse and switch between available models (Copilot only) |
 | `:byok` | Interactive BYOK provider setup — navigate with `Tab`, select with `Enter`, `Esc` to cancel |
-| `Shift-A` | Quick shortcut to open AI chat from any view |
+| **`Shift-A`** | **Open AI chat with the context of the currently selected resource** |
+
+> **💡 Pro Tip: Context-Aware AI with `Shift-A`**
+>
+> The fastest way to get AI help for a specific workload is to **select any resource** (Pod, Deployment, Service, etc.) and press **`Shift-A`**. The AI chat opens pre-loaded with the full context of that resource — its spec, status, events, and related objects. This means you can ask questions like *"Why is this pod crash-looping?"* or *"Is this deployment configured correctly?"* and the AI already knows exactly which resource you're talking about.
+>
+> Instead of copying YAML or describing your problem manually, just navigate to the resource, hit `Shift-A`, and start chatting.
 
 ## Model Selection
 
