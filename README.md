@@ -243,48 +243,6 @@ k9s:
 
 ---
 
-## Full Configuration Reference
-
-```yaml
-# ~/.config/k9s/config.yaml
-k9s:
-  ai:
-    # Enable/disable AI features. Default: true
-    enabled: true
-
-    # Default model. Default: gpt-4.1
-    model: gpt-4.1
-
-    # Enable streaming responses. Default: true
-    streaming: true
-
-    # Max lines of context sent to AI. Default: 500
-    maxContextLines: 500
-
-    # Auto-diagnose unhealthy resources. Default: false
-    autoDiagnose: false
-
-    # Reasoning effort for supported models: low, medium, high, xhigh
-    reasoningEffort: medium
-
-    # Active skill: diagnostics, security, optimization, or "" for all tools
-    activeSkill: ""
-
-    # GitHub token for Copilot auth (leave empty for automatic device flow)
-    # githubToken: ghp_xxx
-
-    # BYOK provider (optional — omit to use GitHub Copilot)
-    provider:
-      type: openai           # openai, azure, or custom
-      baseURL: ""            # API endpoint URL
-      apiKey: ""             # or K9S_AI_API_KEY env var
-      bearerToken: ""        # or K9S_AI_BEARER_TOKEN env var
-      wireApi: ""            # optional: override wire protocol
-      azure:                 # Azure-specific options
-        apiVersion: ""
-```
----
-
 ## Building From Source
 
 K9s AI requires Go 1.25+.
