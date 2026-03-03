@@ -6,14 +6,14 @@
             "bin": [
                 "k9s-ai.exe"
             ],
-            "hash": "7bd5f86b7316e83af2a07a67e4eed499469011a7b12df5cdc1a7ea5be523bff7"
+            "hash": "3cf98b490497af393de52ee924504f9966aeeaeed8a8427b24b46a7039f9b193"
         },
         "arm64": {
             "url": "https://github.com/orshohat1/k9s-ai/releases/download/v0.1.0/k9s-ai_Windows_arm64.zip",
             "bin": [
                 "k9s-ai.exe"
             ],
-            "hash": "4d701a495889b9df85df23fa5aef05e54d36ffe0ba90b9cfb7cbefcc2c43c246"
+            "hash": "b9a62a1f2da70bcc06089d92bc4d92e6731e02fe8c329f4464f0940d46ed7993"
         }
     },
     "homepage": "https://github.com/orshohat1/k9s-ai",
