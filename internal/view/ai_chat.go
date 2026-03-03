@@ -5,6 +5,7 @@ package view
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -23,10 +24,11 @@ import (
 )
 
 const (
-	aiChatTitle    = "AI Chat"
-	aiChatTitleFmt = " AI Chat [hilite:bg:b](%s)[fg:bg:-] "
-	chatSeparator  = "─────────────────────────────────────────────"
-	thinSeparator  = "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
+	aiChatTitle       = "AI Chat"
+	aiChatTitleFmt    = " AI Chat [hilite:bg:b](%s)[fg:bg:-] "
+	chatSeparator     = "─────────────────────────────────────────────"
+	thinSeparator     = "─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─"
+	approvalDialogKey = "ai-approval"
 )
 
 // AIChatView represents the AI chat interface.
@@ -173,11 +175,20 @@ func (v *AIChatView) Start() {
 	v.app.Styles.AddListener(v)
 	v.updateTitle()
 	v.app.SetFocus(v.input)
+
+	// Wire approval and activity callbacks into the AI client.
+	if ai.Client != nil {
+		ai.Client.SetApprovalFunc(v.approvalCallback)
+		ai.Client.SetToolActivityFunc(v.toolActivityCallback)
+	}
 }
 
 // Stop stops the chat view.
 func (v *AIChatView) Stop() {
 	v.app.Styles.RemoveListener(v)
+	if ai.Client != nil {
+		ai.Client.ResetCallbacks()
+	}
 }
 
 // Hints returns menu hints.
@@ -982,30 +993,141 @@ func (l *chatListener) AIReasoningComplete(content string) {
 }
 
 func (l *chatListener) AIToolStart(toolName string) {
+	// Tool activity display is now handled by toolActivityCallback
+	// which has richer descriptions. Just update status bar here.
 	l.view.app.QueueUpdateDraw(func() {
-		// Clear thinking indicator on first tool activity.
-		l.view.clearThinkingIndicator()
-
 		l.view.setStatusTool(toolName)
-		s := l.view.app.Styles
-		dimColor := s.Frame().Menu.FgColor
-		label := toolDisplayName(toolName)
-		fmt.Fprintf(l.view.output, "    [%s::d]⚡ %s[-::-]\n", dimColor, label)
-		l.view.output.ScrollToEnd()
-
-		// Also persist to history.
-		msg := chatMessage{role: "activity", content: label, activity: true}
-		l.view.history = append(l.view.history, msg)
-		scope := l.view.chatScope()
-		globalChatMu.Lock()
-		globalChatHistories[scope] = append(globalChatHistories[scope], msg)
-		globalChatMu.Unlock()
 	})
 }
 
 func (l *chatListener) AIToolComplete(toolName string) {
 	l.view.app.QueueUpdateDraw(func() {
 		l.view.setStatusThinking()
+	})
+}
+
+// --------------------------------------------------------------------------
+// AI approval and activity callbacks
+
+// approvalCallback is called from the AI client's OnPreToolUse hook for mutation
+// tools. It blocks until the user approves or denies via a modal dialog.
+func (v *AIChatView) approvalCallback(toolName, description string, args map[string]any) bool {
+	result := make(chan bool, 1)
+
+	v.app.QueueUpdateDraw(func() {
+		v.showApprovalDialog(toolName, description, args, result)
+	})
+
+	return <-result
+}
+
+// showApprovalDialog pops a confirmation dialog for a mutation tool call.
+func (v *AIChatView) showApprovalDialog(toolName, description string, args map[string]any, result chan<- bool) {
+	styles := v.app.Styles.Dialog()
+
+	// Build a descriptive message.
+	msg := fmt.Sprintf("[::b]%s[::-]\n\n", description)
+
+	// Show relevant args.
+	if gvr, ok := args["gvr"].(string); ok {
+		msg += fmt.Sprintf("  Resource: %s\n", gvr)
+	}
+	if name, ok := args["name"].(string); ok {
+		msg += fmt.Sprintf("  Name:     %s\n", name)
+	}
+	if ns, ok := args["namespace"].(string); ok && ns != "" {
+		msg += fmt.Sprintf("  Namespace: %s\n", ns)
+	}
+	if patch, ok := args["patch"].(string); ok {
+		// Pretty-print the patch JSON.
+		var prettyPatch map[string]any
+		if err := json.Unmarshal([]byte(patch), &prettyPatch); err == nil {
+			if b, err := json.MarshalIndent(prettyPatch, "  ", "  "); err == nil {
+				msg += fmt.Sprintf("\n  Patch:\n  %s\n", string(b))
+			}
+		} else {
+			msg += fmt.Sprintf("\n  Patch: %s\n", patch)
+		}
+	}
+	if r, ok := args["replicas"]; ok {
+		msg += fmt.Sprintf("  Replicas: %v\n", r)
+	}
+
+	dismissed := false
+	dismiss := func() {
+		if dismissed {
+			return
+		}
+		dismissed = true
+		v.app.Content.RemovePage(approvalDialogKey)
+		v.app.SetFocus(v.input)
+	}
+
+	f := tview.NewForm()
+	f.SetItemPadding(0)
+	f.SetButtonsAlign(tview.AlignCenter).
+		SetButtonBackgroundColor(styles.ButtonBgColor.Color()).
+		SetButtonTextColor(styles.ButtonFgColor.Color()).
+		SetLabelColor(styles.LabelFgColor.Color()).
+		SetFieldTextColor(styles.FieldFgColor.Color())
+
+	f.AddButton("Deny", func() {
+		dismiss()
+		result <- false
+	})
+	f.AddButton("Approve", func() {
+		dismiss()
+		result <- true
+	})
+
+	for i := range 2 {
+		if b := f.GetButton(i); b != nil {
+			b.SetBackgroundColorActivated(styles.ButtonFocusBgColor.Color())
+			b.SetLabelColorActivated(styles.ButtonFocusFgColor.Color())
+		}
+	}
+	f.SetFocus(0) // Focus on Deny by default — safe side.
+
+	modal := tview.NewModalForm("<Approve Cluster Change>", f)
+	modal.SetText(msg)
+	modal.SetTextColor(styles.FgColor.Color())
+	modal.SetDoneFunc(func(int, string) {
+		dismiss()
+		result <- false
+	})
+
+	v.app.Content.AddPage(approvalDialogKey, modal, false, false)
+	v.app.Content.ShowPage(approvalDialogKey)
+}
+
+// toolActivityCallback is called when any tool starts executing — updates
+// the chat output with a rich description of what the AI is doing.
+func (v *AIChatView) toolActivityCallback(toolName, description string, isMutation bool) {
+	v.app.QueueUpdateDraw(func() {
+		// Clear thinking indicator on first tool activity.
+		v.clearThinkingIndicator()
+
+		s := v.app.Styles
+		dimColor := s.Frame().Menu.FgColor
+
+		icon := "⚡"
+		color := string(dimColor)
+		if isMutation {
+			icon = "⚠"
+			color = "orange"
+		}
+
+		fmt.Fprintf(v.output, "    [%s::d]%s %s[-::-]\n", color, icon, description)
+		v.output.ScrollToEnd()
+		v.setStatusTool(toolName)
+
+		// Persist to history.
+		msg := chatMessage{role: "activity", content: description, activity: true}
+		v.history = append(v.history, msg)
+		scope := v.chatScope()
+		globalChatMu.Lock()
+		globalChatHistories[scope] = append(globalChatHistories[scope], msg)
+		globalChatMu.Unlock()
 	})
 }
 

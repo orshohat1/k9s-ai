@@ -5,8 +5,10 @@ package ai
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +16,20 @@ import (
 	"github.com/derailed/k9s/internal/slogs"
 	copilot "github.com/github/copilot-sdk/go"
 )
+
+//go:embed skills/diagnostics/SKILL.md skills/security/SKILL.md skills/optimization/SKILL.md skills/observation/SKILL.md
+var skillsFS embed.FS
+
+// SkillPlaybook loads the embedded SKILL.md content for a given skill name.
+// Returns empty string if the skill file is not found.
+func SkillPlaybook(skillName string) string {
+	path := "skills/" + skillName + "/SKILL.md"
+	data, err := skillsFS.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
 
 // Listener receives AI response events.
 type Listener interface {
@@ -35,6 +51,14 @@ type Listener interface {
 	AIToolComplete(toolName string)
 }
 
+// ToolActivityFunc is called when a tool starts execution, for UI display.
+// isMutation is true for tools that modify cluster resources.
+type ToolActivityFunc func(toolName, description string, isMutation bool)
+
+// ApprovalFunc is called for mutation tools. It must block until the user
+// decides. Returns true to allow the mutation, false to deny.
+type ApprovalFunc func(toolName, description string, args map[string]any) bool
+
 // Client manages the GitHub Copilot SDK lifecycle.
 var Client *AIClient
 
@@ -46,15 +70,17 @@ type ModelInfo struct {
 
 // AIClient wraps the Copilot SDK client with k9s-specific configuration.
 type AIClient struct {
-	client      *copilot.Client
-	session     *copilot.Session
-	cfg         config.AI
-	tools       []copilot.Tool
-	allTools    []copilot.Tool
-	skills      *SkillRegistry
-	initialized bool
-	mx          sync.RWMutex
-	log         *slog.Logger
+	client         *copilot.Client
+	session        *copilot.Session
+	cfg            config.AI
+	tools          []copilot.Tool
+	allTools       []copilot.Tool
+	skills         *SkillRegistry
+	initialized    bool
+	approvalFn     ApprovalFunc
+	toolActivityFn ToolActivityFunc
+	mx             sync.RWMutex
+	log            *slog.Logger
 }
 
 // NewAIClient creates a new AI client instance.
@@ -149,6 +175,28 @@ func (c *AIClient) Skills() *SkillRegistry {
 	return c.skills
 }
 
+// SetApprovalFunc registers a callback that gates mutation tools behind user approval.
+func (c *AIClient) SetApprovalFunc(fn ApprovalFunc) {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+	c.approvalFn = fn
+}
+
+// SetToolActivityFunc registers a callback for tool activity notifications.
+func (c *AIClient) SetToolActivityFunc(fn ToolActivityFunc) {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+	c.toolActivityFn = fn
+}
+
+// ResetCallbacks clears all UI callbacks.
+func (c *AIClient) ResetCallbacks() {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+	c.approvalFn = nil
+	c.toolActivityFn = nil
+}
+
 // SetSkill switches the active skill and refilters tools.
 func (c *AIClient) SetSkill(name string) {
 	c.mx.Lock()
@@ -231,9 +279,6 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 	}
 
 	systemMsg := k9sSystemMessage()
-	if suffix := c.skills.SystemMessageSuffix(c.cfg.ActiveSkill); suffix != "" {
-		systemMsg += "\n\n" + suffix
-	}
 	sessionCfg := &copilot.SessionConfig{
 		Model:               c.cfg.Model,
 		Streaming:            c.cfg.Streaming,
@@ -250,6 +295,38 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 		Hooks: &copilot.SessionHooks{
 			OnPreToolUse: func(input copilot.PreToolUseHookInput, inv copilot.HookInvocation) (*copilot.PreToolUseHookOutput, error) {
 				c.log.Debug("Tool invoked", "tool", input.ToolName)
+
+				args, _ := input.ToolArgs.(map[string]any)
+				desc := FormatToolDescription(input.ToolName, args)
+				mutation := IsMutationTool(input.ToolName)
+
+				// Notify UI of tool activity (step display).
+				c.mx.RLock()
+				actFn := c.toolActivityFn
+				appFn := c.approvalFn
+				c.mx.RUnlock()
+
+				if actFn != nil {
+					actFn(input.ToolName, desc, mutation)
+				}
+
+				// Gate mutation tools behind user approval.
+				if mutation && appFn != nil {
+					if !appFn(input.ToolName, desc, args) {
+						c.log.Info("Mutation denied by user", "tool", input.ToolName)
+						return &copilot.PreToolUseHookOutput{
+							PermissionDecision:       "deny",
+							PermissionDecisionReason: "User denied this mutation. Present the suggested fix as text so the user can apply it manually if they choose. Do not retry the same mutation.",
+						}, nil
+					}
+					c.log.Info("Mutation approved by user", "tool", input.ToolName)
+					return &copilot.PreToolUseHookOutput{
+						PermissionDecision: "allow",
+						ModifiedArgs:       input.ToolArgs,
+						AdditionalContext:  "User approved this mutation. After applying, verify the result by checking the resource state.",
+					}, nil
+				}
+
 				return &copilot.PreToolUseHookOutput{
 					PermissionDecision: "allow",
 					ModifiedArgs:       input.ToolArgs,
@@ -420,10 +497,94 @@ func (c *AIClient) ResetSession() {
 	}
 }
 
-func k9sSystemMessage() string {
-	return `You are an expert Kubernetes cluster assistant integrated into K9s, a terminal-based Kubernetes management UI.
+// IsMutationTool returns true if the named tool modifies cluster resources.
+func IsMutationTool(name string) bool {
+	switch name {
+	case "patch_resource", "scale_resource", "restart_resource", "delete_resource":
+		return true
+	}
+	return false
+}
 
-You have FULL ability to both read AND modify resources in the cluster.
+// FormatToolDescription builds a human-readable one-liner for a tool invocation.
+func FormatToolDescription(toolName string, args map[string]any) string {
+	getStr := func(key string) string {
+		if args == nil {
+			return ""
+		}
+		v, _ := args[key].(string)
+		return v
+	}
+
+	name := getStr("name")
+	ns := getStr("namespace")
+	gvr := getStr("gvr")
+	resType := extractResourceType(gvr)
+
+	inNs := ""
+	if ns != "" {
+		inNs = fmt.Sprintf(" in namespace %q", ns)
+	}
+
+	switch toolName {
+	case "get_resource":
+		if name != "" {
+			return fmt.Sprintf("Fetching %s %q%s", resType, name, inNs)
+		}
+		return fmt.Sprintf("Fetching %s%s", resType, inNs)
+	case "list_resources":
+		if sel := getStr("labelSelector"); sel != "" {
+			return fmt.Sprintf("Listing %s%s (selector: %s)", resType, inNs, sel)
+		}
+		return fmt.Sprintf("Listing %s%s", resType, inNs)
+	case "describe_resource":
+		return fmt.Sprintf("Describing %s %q%s", resType, name, inNs)
+	case "get_logs":
+		podName := getStr("podName")
+		desc := fmt.Sprintf("Fetching logs for pod %q%s", podName, inNs)
+		if c := getStr("container"); c != "" {
+			desc += fmt.Sprintf(" (container: %s)", c)
+		}
+		if prev, ok := args["previous"].(bool); ok && prev {
+			desc += " [previous]"
+		}
+		return desc
+	case "get_events":
+		if rn := getStr("resourceName"); rn != "" {
+			return fmt.Sprintf("Checking events for %q%s", rn, inNs)
+		}
+		return fmt.Sprintf("Checking events%s", inNs)
+	case "get_cluster_health":
+		return "Checking cluster health"
+	case "get_pod_diagnostics":
+		return fmt.Sprintf("Running diagnostics on pod %q%s", getStr("podName"), inNs)
+	case "check_rbac":
+		return fmt.Sprintf("Checking RBAC: can %s %s%s", getStr("verb"), getStr("resource"), inNs)
+	case "patch_resource":
+		return fmt.Sprintf("Patching %s %q%s", resType, name, inNs)
+	case "scale_resource":
+		return fmt.Sprintf("Scaling %s %q to %v replicas%s", resType, name, args["replicas"], inNs)
+	case "restart_resource":
+		return fmt.Sprintf("Restarting %s %q%s", resType, name, inNs)
+	case "delete_resource":
+		return fmt.Sprintf("Deleting %s %q%s", resType, name, inNs)
+	default:
+		return fmt.Sprintf("Running %s", toolName)
+	}
+}
+
+func extractResourceType(gvr string) string {
+	if gvr == "" {
+		return "resource"
+	}
+	parts := strings.Split(gvr, "/")
+	return parts[len(parts)-1]
+}
+
+func k9sSystemMessage() string {
+	base := `You are an expert Kubernetes cluster assistant integrated into K9s, a terminal-based Kubernetes management UI.
+
+You have tools to both read and modify resources in the cluster. All mutations require explicit user approval via an interactive dialog.
 
 Read-only tools:
 - get_resource: Fetch a specific resource by GVR, name, and namespace (returns YAML)
@@ -435,7 +596,7 @@ Read-only tools:
 - get_pod_diagnostics: Comprehensive pod diagnostics — phase, container states, restarts, exit codes, probes, resource limits
 - check_rbac: Verify if the current user can perform a specific verb on a resource
 
-Mutation tools (these modify the cluster):
+Mutation tools (require user approval before executing):
 - patch_resource: Apply a JSON merge patch to any resource. Use this to fix bad images, update env vars, change labels, modify resource limits, etc.
   Example: to fix a bad image, patch the deployment with {"spec":{"template":{"spec":{"containers":[{"name":"CONTAINER_NAME","image":"CORRECT_IMAGE"}]}}}}
 - scale_resource: Scale a Deployment/StatefulSet/ReplicaSet to a desired replica count
@@ -444,23 +605,36 @@ Mutation tools (these modify the cluster):
 
 GVR format: Use 'group/version/resource' for namespaced API groups (e.g., 'apps/v1/deployments', 'batch/v1/jobs') or 'version/resource' for core API (e.g., 'v1/pods', 'v1/services').
 
-Diagnostic and fix workflow:
-1. Start with get_pod_diagnostics or describe_resource to understand the current state
-2. Check get_events for Warnings related to the resource
-3. If containers are crashing, use get_logs with previous=true to get crash logs
-4. Check get_cluster_health for cluster-wide issues
-5. When you identify the issue, USE THE MUTATION TOOLS TO FIX IT DIRECTLY — do not just suggest commands
-6. After patching, verify the fix by checking the resource state again
+Skill playbooks (loaded on demand via get_skill_playbook tool):
+- diagnostics: Step-by-step guides for CrashLoopBackOff, OOMKilled, ImagePullBackOff, Pending pods, CreateContainerConfigError
+- security: RBAC audit, container security scan, network policy analysis
+- optimization: Resource right-sizing, scaling recommendations, cost optimization
+- observation: Quick health check, workload deep-dive, log analysis
+When you need to diagnose, audit, optimize, or observe — call get_skill_playbook FIRST to load the relevant playbook, then follow it.
 
-IMPORTANT: When the user asks you to fix something, DO IT. Use patch_resource to apply fixes directly to the cluster. Do NOT tell the user to run kubectl commands — you have the tools to make changes yourself.
+Diagnostic workflow:
+1. Call get_skill_playbook to load the relevant playbook for the task
+2. Follow the playbook steps using the read-only tools
+3. Present your findings: root cause, current state, and available fix options
+4. STOP and wait for the user to decide — do NOT apply any fix automatically
+
+CRITICAL RULE — diagnosis vs fix:
+- By default, ONLY diagnose and present findings. NEVER call mutation tools unless the user explicitly asks you to fix, apply, patch, scale, restart, or delete something.
+- After diagnosing, present the root cause and suggest fix options as text (what you would change and why).
+- Only when the user says something like "fix it", "apply option A", "go ahead", "patch it", etc., THEN use the mutation tools.
+- The system will show an approval dialog when you call a mutation tool — the user gets a final confirm/deny.
+- If the user denies a mutation, present the fix as kubectl commands or YAML so they can apply it manually.
+- Do NOT tell the user to run kubectl commands during diagnosis — use the read-only tools yourself.
 
 Guidelines:
 - Be concise and actionable — users are SREs/DevOps engineers in a terminal
 - When diagnosing issues, start with the most likely root cause
-- ALWAYS attempt to fix issues directly using mutation tools when asked
 - Use bullet points and short paragraphs for readability in a terminal
 - Flag security concerns when you notice them
-- If you need more information to diagnose, use the available tools — do not ask the user to run commands manually
+- If you need more information to diagnose, use the available read-only tools — do not ask the user to run commands manually
 - Always consider the Kubernetes context (namespace, cluster) when answering
-- When listing resources, use sensible limits to avoid overwhelming output`
+- When listing resources, use sensible limits to avoid overwhelming output
+- Keep tool calls to the minimum needed — avoid redundant calls that slow down responses`
+
+	return base
 }

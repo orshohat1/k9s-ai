@@ -60,7 +60,28 @@ func (tf *ToolFactory) BuildTools() []copilot.Tool {
 		tf.scaleResourceTool(),
 		tf.restartResourceTool(),
 		tf.deleteResourceTool(),
+		getSkillPlaybookTool(),
 	}
+}
+
+// --- get_skill_playbook tool ---
+
+type getSkillPlaybookParams struct {
+	Skill string `json:"skill" jsonschema:"Skill name to load. Available: diagnostics, security, optimization, observation"`
+}
+
+func getSkillPlaybookTool() copilot.Tool {
+	return copilot.DefineTool(
+		"get_skill_playbook",
+		"Load a detailed expert playbook for a specific skill. Use this BEFORE starting diagnosis or analysis to get step-by-step guidance. Available skills: diagnostics (CrashLoopBackOff, OOMKilled, ImagePull, Pending, ConfigError), security (RBAC, container security, network policies), optimization (right-sizing, scaling, cost), observation (health checks, deep-dive, log analysis).",
+		func(params getSkillPlaybookParams, inv copilot.ToolInvocation) (any, error) {
+			content := SkillPlaybook(params.Skill)
+			if content == "" {
+				return nil, fmt.Errorf("unknown skill %q — available: diagnostics, security, optimization, observation", params.Skill)
+			}
+			return content, nil
+		},
+	)
 }
 
 // --- get_resource tool ---

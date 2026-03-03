@@ -34,11 +34,9 @@ func NewSkillRegistry() *SkillRegistry {
 			"get_cluster_health",
 			"get_resource",
 		},
-		SystemSuffix: `
-Focus: Root-cause analysis and remediation.
-Workflow: Always start by fetching diagnostics/description, then events, then logs (with previous=true for crashes).
-Prioritize: CrashLoopBackOff > OOMKilled > ImagePullBackOff > Pending (scheduling) > other.
-For each issue found, provide a specific fix (kubectl command or YAML patch).`,
+		SystemSuffix: `Focus: Root-cause analysis and remediation.
+Follow the diagnostics playbook: check pod diagnostics, get crash logs (previous=true), review events, analyze exit codes.
+Present your findings clearly. Do NOT attempt fixes unless the user explicitly asks.`,
 	})
 
 	r.Register(&Skill{
@@ -50,11 +48,10 @@ For each issue found, provide a specific fix (kubectl command or YAML patch).`,
 			"describe_resource",
 			"list_resources",
 		},
-		SystemSuffix: `
-Focus: Security posture and RBAC analysis.
-Check for: Overly permissive ClusterRoleBindings, wildcard verbs/resources, secrets mounted unnecessarily, containers running as root, missing network policies, service accounts with excessive permissions.
-When auditing RBAC: enumerate role bindings, check for privilege escalation paths, verify least-privilege principle.
-Flag any security concerns with severity (Critical/High/Medium/Low).`,
+		SystemSuffix: `Focus: Security posture and RBAC analysis.
+Check for: Overly permissive ClusterRoleBindings, wildcard verbs/resources, secrets mounted unnecessarily, containers running as root, missing network policies.
+Flag any security concerns with severity (Critical/High/Medium/Low).
+Present findings only. Do NOT attempt fixes unless the user explicitly asks.`,
 	})
 
 	r.Register(&Skill{
@@ -67,11 +64,10 @@ Flag any security concerns with severity (Critical/High/Medium/Low).`,
 			"describe_resource",
 			"get_pod_diagnostics",
 		},
-		SystemSuffix: `
-Focus: Resource efficiency, cost optimization, and scaling recommendations.
+		SystemSuffix: `Focus: Resource efficiency, cost optimization, and scaling recommendations.
 Analyze: CPU/memory requests vs limits, over-provisioned pods, under-utilized nodes, missing resource requests.
 Recommend: Right-sized resource requests, HPA configurations, PDB settings, node pool sizing.
-Compare actual usage patterns with configured limits when data is available.`,
+Present findings only. Do NOT attempt fixes unless the user explicitly asks.`,
 	})
 
 	return r
