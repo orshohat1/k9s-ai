@@ -349,9 +349,12 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 						c.log.Info("Mutation deferred — asking model to present plan first", "tool", input.ToolName)
 						return &copilot.PreToolUseHookOutput{
 							PermissionDecision:       "deny",
-							PermissionDecisionReason: "STOP. Before making any changes, you MUST first present your complete plan to the user. " +
-								"Explain every change you intend to make (resource names, namespaces, what will change and why). " +
-								"Ask the user to confirm before proceeding. Do NOT call mutation tools until the user replies.",
+							PermissionDecisionReason: fmt.Sprintf(
+								"DENIED (by design). Present your plan to the user: explain what %s will do (resource, namespace, changes). "+
+								"Ask the user to confirm. After confirmation, call %s again with the same arguments — it will succeed. "+
+								"Do NOT interpret this as an error. Do NOT suggest kubectl commands. Do NOT use report_intent.",
+								input.ToolName, input.ToolName,
+							),
 						}, nil
 					}
 
@@ -360,7 +363,11 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 					c.log.Info("Mutation denied — waiting for user confirmation", "tool", input.ToolName)
 					return &copilot.PreToolUseHookOutput{
 						PermissionDecision:       "deny",
-						PermissionDecisionReason: "You already presented the plan. Wait for the user to confirm before calling mutation tools. Do NOT retry.",
+						PermissionDecisionReason: fmt.Sprintf(
+							"DENIED. You already presented the plan. Stop and wait for the user to reply. "+
+								"When the user confirms, call %s again. Do NOT retry now. Do NOT use report_intent.",
+							input.ToolName,
+						),
 					}, nil
 				}
 
@@ -649,21 +656,28 @@ Skill playbooks (load via get_skill_playbook):
 - observation: Health check, deep-dive, log analysis
 Load the relevant playbook FIRST when diagnosing, auditing, or optimizing.
 
-IMPORTANT — Mutation flow (patch, scale, restart, delete):
-Mutation tools are gated. Your FIRST call to any mutation tool will be AUTOMATICALLY DENIED.
-This is NOT an error — it is by design. When denied:
-1. Present your complete plan to the user: list every change (resource, namespace, what changes, why).
-2. Ask the user to confirm (e.g. "Shall I apply this?").
-3. Do NOT call mutation tools again until the user replies.
-When the user confirms, call the mutation tools again — they will be allowed.
-If the user declines, present the fix as kubectl commands or YAML.
+Mutation tools (the ONLY tools that modify the cluster):
+- patch_resource: apply a strategic merge patch
+- scale_resource: change replica count
+- restart_resource: rolling restart
+- delete_resource: delete a resource
+These are the ONLY tools you should use to make changes. Do NOT use report_intent or any other tool to make or announce mutations.
+
+IMPORTANT — Mutation approval flow:
+Your FIRST call to a mutation tool in a conversation will be AUTOMATICALLY DENIED.
+This is by design, NOT an error. When the first mutation is denied:
+1. Present your plan to the user (resource, namespace, what changes, why).
+2. Ask the user to confirm.
+3. WAIT for the user to reply. Do NOT call any mutation tool again in this turn.
+When the user confirms (says yes/apply/go ahead/etc.), call the SAME mutation tool again with the SAME arguments. It will succeed.
+Do NOT interpret the first denial as a real error. Do NOT suggest manual kubectl commands after a denial.
 
 Workflow:
-1. Use read-only tools to investigate. Keep tool calls minimal.
-2. Present findings: root cause, current state, fix options.
-3. STOP — do NOT call mutation tools unless the user explicitly asks to fix/apply/patch.
-4. When user asks for a fix, call the mutation tool. It will be denied (see above). Present your plan.
-5. After user confirms, call mutation tools again to apply.
+1. Investigate with read-only tools. Keep calls minimal.
+2. Present findings: root cause, state, fix options.
+3. STOP — do NOT call mutation tools unless the user asks to fix/apply/patch.
+4. When user asks for a fix: call the mutation tool directly. It will be denied. Present your plan.
+5. After user confirms: call the same mutation tool again to apply.
 
-Be concise. Use bullet points. Flag security concerns. Never ask the user to run kubectl.`
+Be concise. Use bullet points. Flag security concerns.`
 }
