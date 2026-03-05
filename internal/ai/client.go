@@ -428,7 +428,16 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 
 	session, err := c.client.CreateSession(ctx, sessionCfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create AI session: %w", err)
+		// Some models (e.g. gpt-4.1 on certain backends) don't support
+		// reasoning effort. Retry without it if that's the cause.
+		if sessionCfg.ReasoningEffort != "" && strings.Contains(err.Error(), "reasoning effort") {
+			c.log.Warn("Model does not support reasoning effort, retrying without it", "model", sessionCfg.Model)
+			sessionCfg.ReasoningEffort = ""
+			session, err = c.client.CreateSession(ctx, sessionCfg)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to create AI session: %w", err)
+		}
 	}
 
 	return session, nil
