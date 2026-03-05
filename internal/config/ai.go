@@ -91,8 +91,12 @@ func (a AI) Validate() AI {
 	if !a.Streaming {
 		a.Streaming = true
 	}
+	// Only keep reasoning effort when explicitly set to a supported value.
+	// Note: many models (e.g. gpt-4.1) don't support reasoning effort at all;
+	// the session-creation retry in client.go handles that gracefully.
 	switch a.ReasoningEffort {
-	case "", "low", "medium", "high", "xhigh":
+	case "low", "medium", "high", "xhigh":
+		// keep it — user explicitly chose this
 	default:
 		a.ReasoningEffort = ""
 	}
