@@ -6,6 +6,7 @@ package ai
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +15,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,22 +45,37 @@ var platformPackage = map[string]string{
 }
 
 // ResolveCopilotCLIPath finds or installs the copilot CLI binary.
+//
+// The bundled copilot-sdk speaks a specific wire protocol, so the CLI must be
+// recent enough to match it. An outdated "copilot" on $PATH causes init to fail
+// (e.g. "Time.UnmarshalJSON: input is not a JSON string"). To avoid that, a PATH
+// binary is only used when its version is >= copilotVersion; otherwise the
+// pinned, known-compatible version is used from cache or downloaded.
+//
 // Resolution order:
-//  1. COPILOT_CLI_PATH environment variable
-//  2. "copilot" in $PATH
-//  3. Cached binary in user cache dir (previously downloaded)
-//  4. Auto-download from npm registry
+//  1. COPILOT_CLI_PATH environment variable (explicit override, always honored)
+//  2. "copilot" in $PATH — only if its version >= copilotVersion
+//  3. Cached pinned binary in user cache dir (previously downloaded)
+//  4. Auto-download the pinned version from the npm registry
 func ResolveCopilotCLIPath(log *slog.Logger) string {
-	// 1. Env override.
+	// 1. Env override — trust the user's explicit choice unconditionally.
 	if p := os.Getenv("COPILOT_CLI_PATH"); p != "" {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
 
-	// 2. Already in PATH.
+	// 2. Already in PATH — but only if recent enough to match the bundled SDK.
 	if p, err := exec.LookPath("copilot"); err == nil {
-		return p
+		if ver, ok := copilotCLIVersion(p); ok && versionAtLeast(ver, copilotVersion) {
+			return p
+		} else if ok {
+			log.Warn("Ignoring outdated copilot CLI on PATH; using pinned version instead",
+				"path", p, "found", ver, "required", copilotVersion)
+		} else {
+			log.Warn("Could not determine copilot CLI version on PATH; using pinned version instead",
+				"path", p, "required", copilotVersion)
+		}
 	}
 
 	// 3. Check cache.
@@ -101,6 +119,63 @@ func copilotBinaryName() string {
 		return "copilot.exe"
 	}
 	return "copilot"
+}
+
+// cliVersionRE extracts a semver from `copilot --version` output,
+// e.g. "GitHub Copilot CLI 1.0.65." -> "1.0.65".
+var cliVersionRE = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// copilotCLIVersion runs `<path> --version` and returns the parsed version
+// (e.g. "1.0.65"). The bool is false if the binary can't be run or parsed.
+func copilotCLIVersion(path string) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, path, "--version").Output()
+	if err != nil {
+		return "", false
+	}
+	m := cliVersionRE.FindString(string(out))
+	if m == "" {
+		return "", false
+	}
+	return m, true
+}
+
+// versionAtLeast reports whether semver `have` is >= `want`. Non-numeric or
+// malformed inputs return false (treated as "cannot confirm compatibility").
+func versionAtLeast(have, want string) bool {
+	hp, ok := parseVersion(have)
+	if !ok {
+		return false
+	}
+	wp, ok := parseVersion(want)
+	if !ok {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if hp[i] != wp[i] {
+			return hp[i] > wp[i]
+		}
+	}
+	return true
+}
+
+// parseVersion parses "X.Y.Z" into [3]int. The bool is false on malformed input.
+func parseVersion(v string) ([3]int, bool) {
+	m := cliVersionRE.FindStringSubmatch(v)
+	if m == nil {
+		return [3]int{}, false
+	}
+	var out [3]int
+	for i := 0; i < 3; i++ {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			return [3]int{}, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
 
 // downloadCopilotCLI downloads the platform-specific copilot CLI from npm.
