@@ -1,19 +1,19 @@
 {
-    "version": "0.1.2",
+    "version": "0.1.3",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/orshohat1/k9s-ai/releases/download/v0.1.2/k9s-ai_Windows_amd64.zip",
+            "url": "https://github.com/orshohat1/k9s-ai/releases/download/v0.1.3/k9s-ai_Windows_amd64.zip",
             "bin": [
                 "k9s-ai.exe"
             ],
-            "hash": "849a5ff8099cb55ee98bd693ef239f53b777beca1a9d42f9cf1be6e92034abfa"
+            "hash": "bc52f2b10fad1d1e5e8af1fea7b757716a6eafc0be92ca2851cdf3ee93d39829"
         },
         "arm64": {
-            "url": "https://github.com/orshohat1/k9s-ai/releases/download/v0.1.2/k9s-ai_Windows_arm64.zip",
+            "url": "https://github.com/orshohat1/k9s-ai/releases/download/v0.1.3/k9s-ai_Windows_arm64.zip",
             "bin": [
                 "k9s-ai.exe"
             ],
-            "hash": "2edf2ec2d47fc00b2e54c8b5ef7e12f19aedc297b134d87b1083bd7a186e8799"
+            "hash": "04123381ee2909187cb39558653ed4289d5e2db90b5949850416374682c52cec"
         }
     },
     "homepage": "https://github.com/orshohat1/k9s-ai",
