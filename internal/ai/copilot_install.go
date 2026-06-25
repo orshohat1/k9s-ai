@@ -21,7 +21,8 @@ import (
 
 const (
 	// copilotVersion is the pinned version of the Copilot CLI.
-	copilotVersion = "0.0.420"
+	// Must speak the same protocol version as the bundled copilot-sdk/go.
+	copilotVersion = "1.0.65"
 
 	// npmRegistryURL is the base URL for the npm registry.
 	npmRegistryURL = "https://registry.npmjs.org"

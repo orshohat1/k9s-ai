@@ -126,7 +126,7 @@ func (c *AIClient) Init(ctx context.Context) error {
 
 	// Resolve the copilot CLI binary (check PATH, cache, or auto-download).
 	if cliPath := ResolveCopilotCLIPath(c.log); cliPath != "" {
-		opts.CLIPath = cliPath
+		opts.Connection = copilot.StdioConnection{Path: cliPath}
 	}
 
 	// Wire GitHub authentication.
@@ -152,7 +152,7 @@ func (c *AIClient) Stop() {
 	defer c.mx.Unlock()
 
 	if c.session != nil {
-		_ = c.session.Destroy()
+		_ = c.session.Disconnect()
 		c.session = nil
 	}
 	if c.client != nil {
@@ -209,7 +209,7 @@ func (c *AIClient) SetSkill(name string) {
 
 	// Destroy current session so next Send() creates one with new skill context.
 	if c.session != nil {
-		_ = c.session.Destroy()
+		_ = c.session.Disconnect()
 		c.session = nil
 	}
 }
@@ -229,7 +229,7 @@ func (c *AIClient) SetModel(model string) {
 
 	c.cfg.Model = model
 	if c.session != nil {
-		_ = c.session.Destroy()
+		_ = c.session.Disconnect()
 		c.session = nil
 	}
 }
@@ -283,7 +283,7 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 	systemMsg := k9sSystemMessage()
 	sessionCfg := &copilot.SessionConfig{
 		Model:               c.cfg.Model,
-		Streaming:            c.cfg.Streaming,
+		Streaming:           copilot.Bool(c.cfg.Streaming),
 		Tools:               c.tools,
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		SystemMessage: &copilot.SystemMessageConfig{
@@ -416,7 +416,7 @@ func (c *AIClient) createSession(ctx context.Context) (*copilot.Session, error) 
 			prov.BearerToken = token
 		}
 		if c.cfg.Provider.WireAPI != "" {
-			prov.WireApi = c.cfg.Provider.WireAPI
+			prov.WireAPI = c.cfg.Provider.WireAPI
 		}
 		if c.cfg.Provider.Azure != nil && c.cfg.Provider.Azure.APIVersion != "" {
 			prov.Azure = &copilot.AzureProviderOptions{
@@ -505,34 +505,32 @@ func (c *AIClient) Send(ctx context.Context, prompt string, listener Listener) e
 	// Subscribe to events for live activity display (tools, reasoning, deltas).
 	// The response itself is captured reliably via SendAndWait below.
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
-		c.log.Debug("Session event", "type", string(event.Type))
+		c.log.Debug("Session event", "type", string(event.Type()))
 
-		switch event.Type {
-		case copilot.AssistantMessageDelta, copilot.AssistantStreamingDelta:
-			if event.Data.DeltaContent != nil {
-				listener.AIResponseDelta(*event.Data.DeltaContent)
+		switch d := event.Data.(type) {
+		case *copilot.AssistantMessageDeltaData:
+			if d.DeltaContent != "" {
+				listener.AIResponseDelta(d.DeltaContent)
 			}
-		case copilot.AssistantReasoningDelta:
-			if event.Data.DeltaContent != nil {
-				listener.AIReasoningDelta(*event.Data.DeltaContent)
+		case *copilot.AssistantReasoningDeltaData:
+			if d.DeltaContent != "" {
+				listener.AIReasoningDelta(d.DeltaContent)
 			}
-		case copilot.AssistantReasoning:
-			if event.Data.Content != nil {
-				listener.AIReasoningComplete(*event.Data.Content)
+		case *copilot.AssistantReasoningData:
+			if d.Content != "" {
+				listener.AIReasoningComplete(d.Content)
 			}
-		case copilot.ToolExecutionStart:
-			if event.Data.ToolName != nil {
-				c.log.Debug("Tool start", "tool", *event.Data.ToolName)
-				listener.AIToolStart(*event.Data.ToolName)
+		case *copilot.ToolExecutionStartData:
+			if d.ToolName != "" {
+				c.log.Debug("Tool start", "tool", d.ToolName)
+				listener.AIToolStart(d.ToolName)
 			}
-		case copilot.ToolExecutionComplete:
-			if event.Data.ToolName != nil {
-				c.log.Debug("Tool complete", "tool", *event.Data.ToolName)
-				listener.AIToolComplete(*event.Data.ToolName)
-			}
-		case copilot.SessionError:
-			if event.Data.Message != nil {
-				c.log.Error("Session error event", "msg", *event.Data.Message)
+		case *copilot.ToolExecutionCompleteData:
+			c.log.Debug("Tool complete", "toolCallID", d.ToolCallID)
+			listener.AIToolComplete("")
+		case *copilot.SessionErrorData:
+			if d.Message != "" {
+				c.log.Error("Session error event", "msg", d.Message)
 			}
 		}
 	})
@@ -549,8 +547,10 @@ func (c *AIClient) Send(ctx context.Context, prompt string, listener Listener) e
 	}
 
 	content := ""
-	if response != nil && response.Data.Content != nil {
-		content = *response.Data.Content
+	if response != nil {
+		if msg, ok := response.Data.(*copilot.AssistantMessageData); ok {
+			content = msg.Content
+		}
 	}
 	c.log.Debug("SendAndWait completed", "hasContent", content != "", "contentLen", len(content))
 	listener.AIResponseComplete(content)
@@ -564,7 +564,7 @@ func (c *AIClient) ResetSession() {
 	defer c.mx.Unlock()
 
 	if c.session != nil {
-		_ = c.session.Destroy()
+		_ = c.session.Disconnect()
 		c.session = nil
 	}
 }

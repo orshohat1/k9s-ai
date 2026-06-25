@@ -14,7 +14,7 @@ require (
 	github.com/fatih/color v1.18.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/fvbommel/sortorder v1.1.0
-	github.com/github/copilot-sdk/go v0.1.29
+	github.com/github/copilot-sdk/go v1.0.4
 	github.com/go-errors/errors v1.5.1
 	github.com/itchyny/gojq v0.12.18
 	github.com/karrick/godirwalk v1.17.0
@@ -136,6 +136,7 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/cncf/xds/go v0.0.0-20250501225837-2ac532fd4443 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
 	github.com/containerd/cgroups/v3 v3.1.2 // indirect
 	github.com/containerd/containerd v1.7.30 // indirect
 	github.com/containerd/containerd/api v1.10.0 // indirect
